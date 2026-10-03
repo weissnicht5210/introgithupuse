@@ -1,3 +1,4 @@
+import os
 from datetime import date
 
 from openpyxl import Workbook
@@ -17,6 +18,19 @@ PL = "인턴근무계획"
 PLAN_LAST = 202  # 인턴근무계획 데이터 3~202행 (200명)
 PL2 = "파견수련계획"
 PLAN2_LAST = 203  # 파견수련계획 데이터 4~203행 (200건)
+INTERN_CAP = 200  # 인턴현황 행 수
+# 구글 시트용 빌드 (GSHEETS=1): 업로드 크기를 줄이고, 다른 시트를 참조하는 조건부서식·검증 수식을 INDIRECT로 감싼다
+GS = os.environ.get("GSHEETS") == "1"
+if GS:
+    OUT = "전공의_파견_모니터링_구글시트용.xlsx"
+    CAPACITY, BASE_CAP, INTERN_CAP = 60, 300, 60
+    LAST, BLAST = CAPACITY + 1, BASE_CAP + 1
+    PLAN_LAST, PLAN2_LAST = 2 + INTERN_CAP, 3 + 80
+
+
+def xref(a):
+    return f'INDIRECT("{a}")' if GS else a
+
 HOME_SPECIAL = "구리병원"  # 15일 규칙이 적용되는 소속(입사장소) 병원
 
 f_base = Font(name=FONT, size=10)
@@ -203,8 +217,8 @@ for r in range(3, PLAN_LAST + 1):
 # 입력 검증: 모르는 병원/진료과 약칭이면 오류 팝업 (직접 입력할 때)
 t = 'TRIM(E3)'
 t1 = f'LEFT({t},FIND(" ",{t})-1)'
-dv_formula = (f'AND(ISNUMBER(FIND(" ",{t})),ISNUMBER(MATCH({t1},코드표!$J$2:$J$101,0)),'
-              f'ISNUMBER(MATCH(TRIM(RIGHT(SUBSTITUTE({t}," ",REPT(" ",60)),60)),코드표!$F$2:$F$101,0)))')
+dv_formula = (f'AND(ISNUMBER(FIND(" ",{t})),ISNUMBER(MATCH({t1},{xref("코드표!$J$2:$J$101")},0)),'
+              f'ISNUMBER(MATCH(TRIM(RIGHT(SUBSTITUTE({t}," ",REPT(" ",60)),60)),{xref("코드표!$F$2:$F$101")},0)))')
 dv_plan = DataValidation(type="custom", formula1=dv_formula, allow_blank=True, showErrorMessage=True,
                          errorStyle="stop", errorTitle="등록되지 않은 병원/진료과",
                          error="'지역 진료과' 형식(예: 서울 내과, 제주 산부)으로 입력하세요.\n"
@@ -497,7 +511,7 @@ cf.add(f"E2:E{LAST}", FormulaRule(formula=['ISTEXT($E2)'], font=Font(name=FONT, 
 cf.add(f"I2:I{LAST}", FormulaRule(formula=['ISTEXT($I2)'], font=Font(name=FONT, color="FF0000", bold=True)))
 cf.add(f"Z2:Z{LAST}", FormulaRule(formula=['AND($Z2<>"",$Z2<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
 cf.add(f"U2:W{LAST}", FormulaRule(formula=['$U2="파견종료"'], fill=PatternFill("solid", bgColor="D9D9D9"), font=Font(name=FONT, color="7F7F7F")))
-cf.add(f"A2:T{LAST}", FormulaRule(formula=['AND($U2="파견중",$W2<>"",$W2<=요약!$E$2)'], fill=PatternFill("solid", bgColor="F8CBAD")))
+cf.add(f"A2:T{LAST}", FormulaRule(formula=[f'AND($U2="파견중",$W2<>"",$W2<={xref("요약!$E$2")})'], fill=PatternFill("solid", bgColor="F8CBAD")))
 cf.add(f"U2:U{LAST}", FormulaRule(formula=['$U2="파견중"'], fill=PatternFill("solid", bgColor="C6E0B4")))
 cf.add(f"U2:U{LAST}", FormulaRule(formula=['$U2="파견예정"'], fill=PatternFill("solid", bgColor="BDD7EE")))
 cf.add(f"Y2:Y{LAST}", FormulaRule(formula=['LEFT($Y2,1)="⚠"'], fill=PatternFill("solid", bgColor="FF0000"), font=Font(name=FONT, color="FFFFFF", bold=True)))
@@ -614,8 +628,8 @@ for k in range(6):
     iv[f"{col}3"].font, iv[f"{col}3"].alignment = f_note, center
 
 IV_FIRST = 6
-IV_LAST = IV_FIRST + 200 - 1
-for i in range(200):
+IV_LAST = IV_FIRST + INTERN_CAP - 1
+for i in range(INTERN_CAP):
     r = IV_FIRST + i
     iv.cell(row=r, column=1, value=i + 1)  # 계획행 번호(상수): 정렬해도 같은 행끼리 유지
     iv.cell(row=r, column=3, value=f'=IFERROR(TRIM(INDEX({PR("C")},$A{r})&""),"")')
@@ -692,18 +706,18 @@ lines = [
     ("1) 기본자료  2) 인턴근무계획  3) 파견수련계획 — 세 시트에 각 양식 그대로 붙여넣기  4) 전공의명단에 사번·입사장소만 입력  5) 요약·인턴현황에서 확인", f_base),
     ("", f_base),
     ("[기본자료 업로드]", f_bold),
-    ("• 기본자료 시트 A1:L1 머리글 순서(현재근무 여부·사번·이름·수련과목·연차·근무지·수련개시일·전공의등록번호·의사면허번호·성별·생년월일·비고)로 A2부터 붙여넣으세요. 최대 500명. 열 순서는 유지해야 합니다.", f_base),
+    (f"• 기본자료 시트 A1:L1 머리글 순서(현재근무 여부·사번·이름·수련과목·연차·근무지·수련개시일·전공의등록번호·의사면허번호·성별·생년월일·비고)로 A2부터 붙여넣으세요. 최대 {BASE_CAP}명. 열 순서는 유지해야 합니다.", f_base),
     ("• 날짜(수련개시일·생년월일)는 20260301 형식 숫자도 자동으로 날짜로 변환됩니다. 변환이 안 되는 값(예: 19999999)은 빨간 글씨 원문으로 표시되고 요약의 '날짜 형식 오류'에 집계됩니다.", f_base),
     ("• 기본자료 2~9행은 가상 예시입니다. 삭제하고 실제 자료를 붙여넣으세요. 인턴도 올리고 수련과목을 '인턴'으로 적으면 현재 진료과가 수련교육부(인턴)로 표시됩니다.", f_base),
     ("", f_base),
     ("[인턴근무계획 업로드]", f_bold),
-    ("• 인턴근무계획 시트의 업로드 양식(B1 제목, B2:K2 머리글, 3행부터 자료) 그대로 붙여넣으세요. 최대 200명. 오른쪽 초록 열(M~T)은 자동 정규화 결과이므로 지우지 마세요.", f_base),
+    (f"• 인턴근무계획 시트의 업로드 양식(B1 제목, B2:K2 머리글, 3행부터 자료) 그대로 붙여넣으세요. 최대 {PLAN_LAST - 2}명. 오른쪽 초록 열(M~T)은 자동 정규화 결과이므로 지우지 마세요.", f_base),
     ("• 월 칸은 '지역 진료과'(예: 서울 내과, 서울 산부, 제주 에스중앙 내과)로 읽습니다. 첫 단어=지역(병원 표기표로 정식 병원 변환), 마지막 단어=진료과(약칭표로 정식 명칭 변환). 사이 단어는 무시합니다.", f_base),
     ("• 통합(과 미지정)과 핵방/핵/방(핵의학과+방사선종양학과)은 인턴 전용 구분으로 인정됩니다.", f_base),
     ("• 인턴근무계획에만 있는 내용은 해당 월 1일~말일 근무로 간주합니다(기본값). 비고의 2026.03은 2026년 3월 1일 입사로 해석해 인턴현황 '입사일'에 표시합니다.", f_base),
     ("", f_base),
     ("[파견수련계획 업로드]", f_bold),
-    ("• 파견수련계획 시트의 양식(1~3행 병합 머리글, 4행부터 자료: 연번·모병원명·수련종별·수련과목·연차·성명·전공의등록번호·파견시작일·파견종료일·파견일수·파견병원·파견과목·파견근거·비고)대로 붙여넣으세요. 최대 200건.", f_base),
+    (f"• 파견수련계획 시트의 양식(1~3행 병합 머리글, 4행부터 자료: 연번·모병원명·수련종별·수련과목·연차·성명·전공의등록번호·파견시작일·파견종료일·파견일수·파견병원·파견과목·파견근거·비고)대로 붙여넣으세요. 최대 {PLAN2_LAST - 3}건.", f_base),
     ("• 한 사람이 여러 번 파견되면 행을 여러 개 입력합니다. 전공의명단과는 '전공의등록번호'로 연결됩니다(기본자료의 등록번호와 같아야 함).", f_base),
     ("• 모병원명·파견병원은 코드표의 '병원 표기' 표로 정식 병원(서울병원 등)에 연결됩니다. 표에 없는 기관명(인천·창원·오산 등)은 코드표 J·K열에 추가하세요.", f_base),
     ("• 파견근거는 모자 / 통합수련 / 다기관 입니다. 비고(N열, 또는 O열)에 '다기관'이 들어 있으면 다기관 파견으로 인식합니다. 비고가 '2026.09.01-2026.09.30 다기관 파견'처럼 기간으로 시작하면 그 기간을, 아니면 해당 행의 파견 기간을 다기관 기간으로 봅니다.", f_base),
@@ -728,6 +742,9 @@ lines = [
     ("[정렬·필터]", f_bold),
     ("• 전공의명단·인턴현황 머리글의 ▼ 버튼으로 정렬/필터합니다 (예: 파견상태=파견중, 종료까지(일) 오름차순 → 종료 임박순).", f_base),
     ("• 주황색 행: 파견중이면서 종료까지 요약 시트의 기준일수(기본 30일) 이내.  회색: 파견종료.", f_base),
+    ("", f_base),
+    ("[행 늘리기]", f_bold),
+    (f"• 전공의명단은 {CAPACITY}행까지 수식이 채워져 있습니다. 더 필요하면 표의 마지막 행 '위'에 행을 삽입하고 바로 위 행을 복사해 붙여넣으세요. 마지막 행 아래에 붙이면 요약 등이 참조하는 범위에 포함되지 않습니다. (인턴근무계획·파견수련계획·인턴현황도 같은 방법)", f_base),
     ("", f_base),
     ("[참고]", f_bold),
     ("• 개인정보(생년월일·면허번호 등)가 포함되므로 파일 암호 설정과 접근 권한 관리를 권장합니다.", f_base),
