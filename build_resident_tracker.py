@@ -10,8 +10,8 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 OUT = "전공의_파견_모니터링.xlsx"
 FONT = "맑은 고딕"
-CAPACITY = 200   # 전공의명단(파견 관리 대상) 행 수
-BASE_CAP = 500   # 기본자료 붙여넣기 가능 행 수
+CAPACITY = 400   # 전공의명단(파견 관리 대상) 행 수
+BASE_CAP = 1000  # 기본자료 붙여넣기 가능 행 수
 LAST = CAPACITY + 1
 BLAST = BASE_CAP + 1
 PL = "인턴근무계획"
@@ -23,7 +23,7 @@ INTERN_CAP = 200  # 인턴현황 행 수
 GS = os.environ.get("GSHEETS") == "1"
 if GS:
     OUT = "전공의_파견_모니터링_구글시트용.xlsx"
-    CAPACITY, BASE_CAP, INTERN_CAP = 60, 300, 60
+    CAPACITY, BASE_CAP, INTERN_CAP = 400, 1000, 60
     LAST, BLAST = CAPACITY + 1, BASE_CAP + 1
     PLAN_LAST, PLAN2_LAST = 2 + INTERN_CAP, 3 + 80
 
