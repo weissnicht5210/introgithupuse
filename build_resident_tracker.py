@@ -15,17 +15,18 @@ BASE_CAP = 1000  # 기본자료 붙여넣기 가능 행 수
 LAST = CAPACITY + 1
 BLAST = BASE_CAP + 1
 PL = "인턴근무계획"
-PLAN_LAST = 202  # 인턴근무계획 데이터 3~202행 (200명)
+INTERN_CAP = 400  # 인턴근무계획·인턴현황 행 수
+PLAN_LAST = 2 + INTERN_CAP  # 인턴근무계획 데이터 3~402행 (400명)
 PL2 = "파견수련계획"
-PLAN2_LAST = 203  # 파견수련계획 데이터 4~203행 (200건)
-INTERN_CAP = 200  # 인턴현황 행 수
+DISPATCH_CAP = 800  # 파견수련계획 행 수 (한 사람이 여러 건일 수 있음)
+PLAN2_LAST = 3 + DISPATCH_CAP  # 파견수련계획 데이터 4~803행
 # 구글 시트용 빌드 (GSHEETS=1): 업로드 크기를 줄이고, 다른 시트를 참조하는 조건부서식·검증 수식을 INDIRECT로 감싼다
 GS = os.environ.get("GSHEETS") == "1"
 if GS:
     OUT = "전공의_파견_모니터링_구글시트용.xlsx"
-    CAPACITY, BASE_CAP, INTERN_CAP = 400, 1000, 60
+    CAPACITY, BASE_CAP, INTERN_CAP, DISPATCH_CAP = 400, 1000, 400, 800
     LAST, BLAST = CAPACITY + 1, BASE_CAP + 1
-    PLAN_LAST, PLAN2_LAST = 2 + INTERN_CAP, 3 + 80
+    PLAN_LAST, PLAN2_LAST = 2 + INTERN_CAP, 3 + DISPATCH_CAP
 
 
 def xref(a):
@@ -311,7 +312,7 @@ for r in range(4, PLAN2_LAST + 1):
     dp[f"Y{r}"].value = f'=IF(OR(Q{r}="",X{r}=""),"",Q{r}&"|"&X{r})'
     dp[f"Z{r}"].value = f'=IF(AND(Q{r}<>"",W{r}>0),Q{r}&"|월","")'
     dp[f"AA{r}"].value = (
-        f'=IF(COUNTA(B{r}:N{r})=0,"",IF(Q{r}="","등록번호 없음",IF(LEFT(R{r},1)="⚠","모병원명 미등록",'
+        f'=IF(COUNTA(B{r}:I{r},K{r}:N{r})=0,"",IF(Q{r}="","등록번호 없음",IF(LEFT(R{r},1)="⚠","모병원명 미등록",'
         f'IF(S{r}="","파견병원 입력",IF(LEFT(S{r},1)="⚠","파견병원명 미등록",IF(LEFT(U{r},1)="⚠","파견과목 미등록",'
         f'IF(OR(T{r}="",LEFT(T{r},1)="⚠"),"파견근거 확인",IF(NOT(AND(ISNUMBER(H{r}),ISNUMBER(I{r}))),"날짜 형식/누락",'
         f'IF(I{r}<H{r},"종료일<시작일","")))))))))')
