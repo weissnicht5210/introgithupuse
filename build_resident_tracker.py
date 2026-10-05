@@ -114,6 +114,18 @@ notes = [
 ]
 for i, t in enumerate(notes):
     ref[f"M{1+i}"].value, ref[f"M{1+i}"].font = t, f_base
+# 설정값: 다른 시트는 요약 상단 셀을 통해 이 값을 참조
+ref.column_dimensions["M"].width = 26
+ref.column_dimensions["N"].width = 14
+ref["M8"].value, ref["M8"].font, ref["M8"].fill = "설정값 (노란 칸만 수정)", f_head, fill_head
+ref["N8"].fill = fill_head
+for rr, (label, val, fmt) in enumerate([("급여 기준월(1일)", "=DATE(YEAR(TODAY()),MONTH(TODAY()),1)", "yyyy-mm-dd"),
+                                         ("서울·구리 15일 기준(일)", 15, "0"),
+                                         ("종료 임박 기준(일)", 30, "0")], 9):
+    ref[f"M{rr}"].value, ref[f"M{rr}"].font, ref[f"M{rr}"].border = label, f_bold, border
+    c = ref[f"N{rr}"]
+    c.value, c.number_format, c.font, c.fill, c.border, c.alignment = val, fmt, f_input, fill_key, border, center
+ref["M12"].value, ref["M12"].font = "※ 급여 기준월: 다른 달을 보려면 그 달 1일 날짜를 입력. 비우면 안 됩니다(기본 수식 = 이번 달 1일).", f_note
 
 # ---------------------------------------------------------------- 기본자료 (업로드 시트)
 bs = wb.create_sheet("기본자료", 0)
@@ -374,6 +386,7 @@ cols = [
     ("소속병원", 11, "calc"), ("파견기록행", 9, "calc"), ("기준월 근무병원", 12, "calc"),                 # AE-AG
     ("서울 근무일(기준월)", 10, "calc"), ("구리 근무일(기준월)", 10, "calc"), ("기준월 대표파견행", 10, "calc"),  # AH-AJ
     ("다기관 기록행", 9, "calc"), ("다기관(비고 기재 기간)", 26, "calc"),                                  # AK-AL
+    ("서울급여 순번", 9, "calc"), ("판정불가 순번", 9, "calc"), ("급여 판정 근거", 34, "calc"),              # AM-AO
 ]
 NCOL = len(cols)
 for i, (h, w, k) in enumerate(cols, 1):
@@ -479,6 +492,13 @@ for r in range(2, LAST + 1):
     ws.cell(row=r, column=38, value=(
         f'=IF($AK{r}="","","다기관 "&TEXT(INDEX({DR("AB")},$AK{r}),"yyyy-mm-dd")&"~"&'
         f'IF(ISNUMBER(INDEX({DR("AC")},$AK{r})),TEXT(INDEX({DR("AC")},$AK{r}),"yyyy-mm-dd"),""))'))
+    ws.cell(row=r, column=39, value=f'=IF($Y{r}="서울병원",COUNTIF($Y$2:$Y{r},"서울병원"),"")')
+    ws.cell(row=r, column=40, value=f'=IF(LEFT($Y{r},1)="⚠",COUNTIF($Y$2:$Y{r},"⚠*"),"")')
+    dm = f'IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*{DR("AD")}))'
+    ws.cell(row=r, column=41, value=(
+        f'=IF(OR($B{r}="",$Y{r}=""),"",IF({dm}>0,"다기관 기간 → 소속병원 지급",IF(N($X{r})<=0,"파견 없음 → 그 달 근무병원 지급",'
+        f'IF($AH{r}+$AI{r}={MD},"서울 "&$AH{r}&"일 / 구리 "&$AI{r}&"일 → 15일 이상 근무 병원 지급",'
+        f'"타 병원 포함 → "&IF($AJ{r}="","소속",INDEX({DR("T")},$AJ{r}))&" 규칙"))))'))
     for c in range(1, NCOL + 1):
         cell = ws.cell(row=r, column=c)
         cell.border = border
@@ -524,13 +544,12 @@ sm["A1"].value, sm["A1"].font = "파견 현황 요약", f_title
 sm["A2"].value, sm["A2"].font = "기준일", f_bold
 sm["B2"].value, sm["B2"].number_format, sm["B2"].font = "=TODAY()", "yyyy-mm-dd", f_base
 sm["D2"].value, sm["D2"].font = "종료 임박 기준(일)", f_bold
-sm["E2"].value, sm["E2"].font, sm["E2"].fill = 30, f_input, fill_key
-sm["F2"].value, sm["F2"].font = "← 전공의명단 주황색 강조에도 반영", f_base
+sm["E2"].value, sm["E2"].font = "=코드표!$N$11", f_bold
+sm["F2"].value, sm["F2"].font = "← 설정값은 설정_코드표 시트에서 변경", f_note
 sm["A3"].value, sm["A3"].font = "급여 기준월(1일)", f_bold
-sm["B3"].value, sm["B3"].number_format, sm["B3"].font, sm["B3"].fill = "=DATE(YEAR(TODAY()),MONTH(TODAY()),1)", "yyyy-mm-dd", f_input, fill_key
+sm["B3"].value, sm["B3"].number_format, sm["B3"].font = "=코드표!$N$9", "yyyy-mm-dd", f_bold
 sm["D3"].value, sm["D3"].font = "서울·구리 15일 기준(일)", f_bold
-sm["E3"].value, sm["E3"].font, sm["E3"].fill = 15, f_input, fill_key
-sm["F3"].value, sm["F3"].font = "← 급여 기준월은 다른 달의 1일로 바꿔 입력하면 그 달 기준으로 계산됩니다", f_base
+sm["E3"].value, sm["E3"].font = "=코드표!$N$10", f_bold
 
 
 def head(cell, text):
@@ -598,8 +617,82 @@ for col, w in zip("ABCDEFGHIJ", [34, 10, 3, 14, 12, 14, 14, 3, 20, 10]):
     sm.column_dimensions[col].width = w
 sm.row_dimensions[4].height = 30
 
+# ---------------------------------------------------------------- 출력_서울급여 (이번 달 서울병원 급여 지급 대상)
+sp = wb.create_sheet("출력_서울급여", 4)
+SP_CAP = CAPACITY  # 최대 표시 인원 (명단과 동일)
+SP_FIRST = 6
+SP_LAST = SP_FIRST + SP_CAP - 1
+NR = lambda col: f"전공의명단!${col}$2:${col}${LAST}"
+sp["A1"].value, sp["A1"].font = "서울병원 급여 지급 대상자", f_title
+sp["A2"].value, sp["A2"].font = "급여 기준월", f_bold
+sp["B2"].value, sp["B2"].number_format, sp["B2"].font = "=요약!$B$3", 'yyyy"년" m"월"', Font(name=FONT, size=12, bold=True, color="1F3864")
+kpis = [("D2", "서울 지급 인원", "E2", f'=COUNTIF({NR("Y")},"서울병원")'),
+        ("F2", "그중 타 병원 소속", "G2", f'=COUNTIFS({NR("Y")},"서울병원",{NR("AE")},"<>서울병원")'),
+        ("H2", "⚠ 판정 불가", "I2", f'=COUNTIF({NR("Y")},"⚠*")')]
+for lc, lt, vc, vf in kpis:
+    sp[lc].value, sp[lc].font, sp[lc].alignment = lt, f_bold, Alignment(horizontal="right", vertical="center")
+    sp[vc].value, sp[vc].font, sp[vc].alignment, sp[vc].border = vf, Font(name=FONT, size=12, bold=True), center, border
+sp["A3"].value, sp["A3"].font = ("※ 급여 기준월(기본=이번 달)은 설정_코드표 시트에서 바꿉니다. 이 시트는 자동으로 채워지므로 입력하지 마세요. "
+                                 "노란 행 = 소속은 다른 병원인데 이번 달 서울병원이 지급하는 사람."), f_note
+sp.conditional_formatting.add("I2", FormulaRule(formula=["I2>0"], fill=PatternFill("solid", bgColor="FF0000"), font=Font(name=FONT, color="FFFFFF", bold=True)))
+
+# (머리글, 너비, 명단 열 / 특수)
+sp_cols = [("번호", 6, None), ("이름", 10, "C"), ("사번", 11, "B"), ("전공의등록번호", 13, "J"), ("수련과목", 14, "F"),
+           ("연차", 10, "G"), ("소속병원", 11, "AE"), ("구분", 22, "KIND"), ("현재 근무병원", 12, "N"),
+           ("파견근거", 10, "P"), ("파견병원", 11, "Q"), ("파견시작일", 12, "S"), ("파견종료일", 12, "T"),
+           ("서울 근무일", 9, "AH"), ("구리 근무일", 9, "AI"), ("판정 근거", 34, "AO"), ("점검", 24, "Z"), ("명단행", 7, "ROW")]
+SPC = {h: get_column_letter(i) for i, (h, _, _) in enumerate(sp_cols, 1)}
+rowcol = SPC["명단행"]
+for i, (h, w, _) in enumerate(sp_cols, 1):
+    c = sp.cell(row=5, column=i, value=h)
+    c.font, c.fill, c.alignment, c.border = f_head, fill_head, wrap_center, border
+    sp.column_dimensions[get_column_letter(i)].width = w
+sp.row_dimensions[5].height = 30
+for k in range(SP_CAP):
+    r = SP_FIRST + k
+    sp[f"{rowcol}{r}"].value = f'=IFERROR(MATCH(ROW()-{SP_FIRST - 1},{NR("AM")},0),"")'
+    for i, (h, _, src) in enumerate(sp_cols, 1):
+        cell = sp.cell(row=r, column=i)
+        if src is None:
+            cell.value = f'=IF(${rowcol}{r}="","",ROW()-{SP_FIRST - 1})'
+        elif src == "KIND":
+            cell.value = (f'=IF(${rowcol}{r}="","",IF(INDEX({NR("AE")},${rowcol}{r})="서울병원","서울 소속",'
+                          f'"타 병원 소속("&INDEX({NR("AE")},${rowcol}{r})&") → 서울 지급"))')
+        elif src != "ROW":
+            cell.value = f'=IF(${rowcol}{r}="","",INDEX({NR(src)},${rowcol}{r}))'
+        cell.font, cell.border = (f_note if src == "ROW" else f_base), border
+        cell.alignment = Alignment(horizontal="left", vertical="center") if h in ("판정 근거", "점검", "구분") else center
+    for h in ("파견시작일", "파견종료일"):
+        sp[f"{SPC[h]}{r}"].number_format = "yyyy-mm-dd"
+sp.freeze_panes = "C6"
+sp.auto_filter.ref = f"A5:{get_column_letter(len(sp_cols))}{SP_LAST}"
+kind = SPC["구분"]
+sp.conditional_formatting.add(f"A{SP_FIRST}:{get_column_letter(len(sp_cols) - 1)}{SP_LAST}",
+                              FormulaRule(formula=[f'LEFT(${kind}{SP_FIRST},2)="타 "'], fill=PatternFill("solid", bgColor="FFF2CC")))
+zc = SPC["점검"]
+sp.conditional_formatting.add(f"{zc}{SP_FIRST}:{zc}{SP_LAST}", FormulaRule(formula=[f'AND(${zc}{SP_FIRST}<>"",${zc}{SP_FIRST}<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE")))
+
+# 판정 불가 목록 (오른쪽)
+ec = len(sp_cols) + 2  # 한 칸 띄움
+sp.column_dimensions[get_column_letter(ec - 1)].width = 3
+sp.cell(row=4, column=ec, value="⚠ 서울·구리 15일 판정 불가 (양쪽 모두 15일 이상/미만) — 담당자 확인 필요").font = Font(name=FONT, size=10, bold=True, color="C00000")
+err_cols = [("이름", 10, "C"), ("사번", 11, "B"), ("소속병원", 11, "AE"), ("서울 근무일", 9, "AH"), ("구리 근무일", 9, "AI"), ("명단행", 7, "ROW")]
+erow = get_column_letter(ec + len(err_cols) - 1)
+for j, (h, w, _) in enumerate(err_cols):
+    c = sp.cell(row=5, column=ec + j, value=h)
+    c.font, c.fill, c.alignment, c.border = f_head, PatternFill("solid", fgColor="C00000"), wrap_center, border
+    sp.column_dimensions[get_column_letter(ec + j)].width = w
+for k in range(100):
+    r = SP_FIRST + k
+    sp[f"{erow}{r}"].value = f'=IFERROR(MATCH(ROW()-{SP_FIRST - 1},{NR("AN")},0),"")'
+    for j, (h, _, src) in enumerate(err_cols):
+        cell = sp.cell(row=r, column=ec + j)
+        if src != "ROW":
+            cell.value = f'=IF(${erow}{r}="","",INDEX({NR(src)},${erow}{r}))'
+        cell.font, cell.border, cell.alignment = (f_note if src == "ROW" else f_base), border, center
+
 # ---------------------------------------------------------------- 인턴현황 (조회·정렬용)
-iv = wb.create_sheet("인턴현황", 5)
+iv = wb.create_sheet("인턴현황", 6)
 iv["A1"].value, iv["A1"].font = "인턴 근무 현황", f_title
 iv["A2"].value, iv["A2"].font = "기준일", f_bold
 iv["B2"].value, iv["B2"].number_format, iv["B2"].font = "=TODAY()", "yyyy-mm-dd", f_base
@@ -703,8 +796,15 @@ gd = wb.create_sheet("사용안내", 0)
 lines = [
     ("전공의·인턴 파견 모니터링 사용 안내", f_title),
     ("", f_base),
+    ("[시트 구분] — 탭 색: 파랑=입력, 초록=출력(자동, 입력 금지), 회색=설정", f_bold),
+    ("• 입력_기본자료 / 입력_인턴근무계획 / 입력_파견수련계획: 각 업로드 양식을 그대로 붙여넣는 시트 (오른쪽 초록 머리글 열은 자동 계산)", f_base),
+    ("• 입력_전공의명단: 사번·입사장소·비고만 입력 (파란 글씨 칸). 나머지 열은 자동", f_base),
+    ("• 출력_서울급여: 급여 기준월(기본=이번 달)에 서울병원이 급여를 지급할 사람 목록과 판정 근거, 판정 불가(⚠) 목록", f_base),
+    ("• 출력_요약 / 출력_인턴현황: 집계·현황 (자동)", f_base),
+    ("• 설정_코드표: 병원·진료과·파견근거·약칭 목록, 설정값(급여 기준월·15일 기준·종료 임박 기준)", f_base),
+    ("", f_base),
     ("[전체 흐름]", f_bold),
-    ("1) 기본자료  2) 인턴근무계획  3) 파견수련계획 — 세 시트에 각 양식 그대로 붙여넣기  4) 전공의명단에 사번·입사장소만 입력  5) 요약·인턴현황에서 확인", f_base),
+    ("1) 기본자료  2) 인턴근무계획  3) 파견수련계획 — 세 시트에 각 양식 그대로 붙여넣기  4) 전공의명단에 사번·입사장소만 입력  5) 출력 시트(서울급여·요약·인턴현황)에서 확인", f_base),
     ("", f_base),
     ("[기본자료 업로드]", f_bold),
     (f"• 기본자료 시트 A1:L1 머리글 순서(현재근무 여부·사번·이름·수련과목·연차·근무지·수련개시일·전공의등록번호·의사면허번호·성별·생년월일·비고)로 A2부터 붙여넣으세요. 최대 {BASE_CAP}명. 열 순서는 유지해야 합니다.", f_base),
@@ -735,14 +835,14 @@ lines = [
     ("• 근무일 계산: 파견 기간은 파견병원, 나머지 날은 소속병원(인턴은 해당 월 근무계획 병원)에서 근무한 것으로 봅니다. 양쪽 모두 15일 이상이거나 모두 미만이면 판정할 수 없으므로 급여지급병원 칸에 빨간 ⚠ 오류가 표시되고, 점검 열과 요약에 집계됩니다.", f_base),
     ("• 서울·구리 외 병원이 섞인 경우(가정): 통합수련=파견병원이 지급, 모자·다기관=소속병원이 지급. 이 부분은 확정 규칙이 아니므로 실제 규정에 맞는지 확인하세요.", f_base),
     ("• 파견이 없는 달은 그 달 근무병원(소속 또는 인턴 근무계획 병원)이 지급합니다.", f_base),
-    ("• 급여 기준월은 요약 시트 B3(기본값=이번 달 1일)입니다. 다른 달 급여는 그 달 1일 날짜로 바꾸세요. 15일 기준은 요약 E3에서 바꿀 수 있습니다. 급여지급병원 칸이 노란색이면 소속과 다른 병원에서 지급되는 경우입니다.", f_base),
+    ("• 급여 기준월은 설정_코드표 시트 N9(기본값=이번 달 1일)입니다. 다른 달 급여는 그 달 1일 날짜로 바꾸세요. 15일 기준도 같은 곳에서 바꿉니다. 급여지급병원 칸이 노란색이면 소속과 다른 병원에서 지급되는 경우입니다.", f_base),
     ("", f_base),
     ("[점검 열]", f_bold),
     ("• 전공의명단 '점검' 열이 '정상'이 아니면 빨간색으로 표시됩니다 (기본자료에 없는 사번, 중복, 소속 누락, 파견수련계획/인턴계획 입력오류, 인턴 타지역 근무인데 파견 입력 없음 등).", f_base),
     ("", f_base),
     ("[정렬·필터]", f_bold),
     ("• 전공의명단·인턴현황 머리글의 ▼ 버튼으로 정렬/필터합니다 (예: 파견상태=파견중, 종료까지(일) 오름차순 → 종료 임박순).", f_base),
-    ("• 주황색 행: 파견중이면서 종료까지 요약 시트의 기준일수(기본 30일) 이내.  회색: 파견종료.", f_base),
+    ("• 주황색 행: 파견중이면서 종료까지 설정_코드표 N11의 기준일수(기본 30일) 이내.  회색: 파견종료.", f_base),
     ("", f_base),
     ("[행 늘리기]", f_bold),
     (f"• 전공의명단은 {CAPACITY}행까지 수식이 채워져 있습니다. 더 필요하면 표의 마지막 행 '위'에 행을 삽입하고 바로 위 행을 복사해 붙여넣으세요. 마지막 행 아래에 붙이면 요약 등이 참조하는 범위에 포함되지 않습니다. (인턴근무계획·파견수련계획·인턴현황도 같은 방법)", f_base),
@@ -755,6 +855,28 @@ for i, (t, f) in enumerate(lines, 1):
 gd.column_dimensions["A"].width = 175
 gd.sheet_view.showGridLines = False
 
-wb.move_sheet("코드표", offset=0)
+# 시트 이름에 입력/출력/설정 구분을 붙이고, 모든 수식·검증·조건부서식의 시트 참조를 함께 바꾼다
+import re
+RENAME = {"기본자료": "입력_기본자료", "인턴근무계획": "입력_인턴근무계획", "파견수련계획": "입력_파견수련계획",
+          "전공의명단": "입력_전공의명단", "요약": "출력_요약", "인턴현황": "출력_인턴현황", "코드표": "설정_코드표"}
+_pat = re.compile(r"(?<![\w])(" + "|".join(sorted(RENAME, key=len, reverse=True)) + r")!")
+_fix = lambda t: _pat.sub(lambda m: RENAME[m.group(1)] + "!", t) if isinstance(t, str) else t
+for sh in wb.worksheets:
+    for row in sh.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = _fix(cell.value)
+    for dv in sh.data_validations.dataValidation:
+        dv.formula1 = _fix(dv.formula1)
+    for cfr in sh.conditional_formatting:
+        for rule in cfr.rules:
+            rule.formula = [_fix(f) for f in rule.formula]
+for old, new in RENAME.items():
+    wb[old].title = new
+TAB = {"입력_": "2F5597", "출력_": "548235", "설정_": "7F7F7F"}
+for sh in wb.worksheets:
+    for pre, color in TAB.items():
+        if sh.title.startswith(pre):
+            sh.sheet_properties.tabColor = color
 wb.save(OUT)
 print("saved", OUT, wb.sheetnames)
