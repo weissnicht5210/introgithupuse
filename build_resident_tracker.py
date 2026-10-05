@@ -370,6 +370,54 @@ dp.conditional_formatting.add(f"A4:O{PLAN2_LAST}", FormulaRule(formula=['$AA4<>"
 dp.conditional_formatting.add(f"R4:U{PLAN2_LAST}", FormulaRule(formula=['LEFT(R4,1)="⚠"'], font=Font(name=FONT, color="C00000", bold=True)))
 dp.conditional_formatting.add(f"AA4:AA{PLAN2_LAST}", FormulaRule(formula=['$AA4<>""'], font=Font(name=FONT, color="C00000", bold=True)))
 
+# ---------------------------------------------------------------- 입력_구리근무자명단 (구리병원이 보내는 양식 그대로)
+GURI_IN = "입력_구리근무자명단"
+GURI_ROWS = 300            # 데이터 4~303행
+GURI_LASTROW = 3 + GURI_ROWS
+GURI_LASTCOL = "GZ"        # 월 블록이 늘어나도 받을 수 있도록 넉넉히 (A~GZ)
+gi = wb.create_sheet(GURI_IN)
+gi["A1"].value, gi["A1"].font = "전공의(모.자 파견) 근무자 명단", f_title
+gi["A2"].value, gi["A2"].font = "2026년도", f_bold
+g_heads = ["소속", "년차"]
+months = [(2026, m) for m in range(9, 13)] + [(2027, m) for m in range(1, 9)]
+for y, m in months:
+    g_heads += [f"{y}년{m}월\n근무예정자", f"{m}월\n근무자", "근무 시작일자\n(시작일자 작성)", "근무 종료일자\n(종료일자 작성)",
+                f"{m}월 휴가 스케줄\n(휴가일 작성)", "비고"]
+for i, h in enumerate(g_heads, 1):
+    c = gi.cell(row=3, column=i, value=h)
+    c.font, c.fill, c.alignment, c.border = f_head, fill_head, wrap_center, border
+    gi.column_dimensions[get_column_letter(i)].width = 11
+gi.column_dimensions["A"].width = 14
+gi.column_dimensions["B"].width = 6
+gi.row_dimensions[3].height = 44
+# 가상 예시 (양식과 동일: 진료과는 첫 행에만, 날짜는 'YYYY.MM.DD' 글자)
+g_sample = [
+    # 소속, 년차, 9월(예정,근무,시작,종료,휴가,비고), 10월(...)
+    ("내과", 3, ["박ㅇㅇ", None, None, None, None, None], ["박ㅇㅇ", "박ㅇㅇ", "2026.10.01", "2026.10.31", None, None]),
+    ("가정의학과", 1, [None] * 6, ["김ㅇㅇ", "김ㅇㅇ", "2026.10.21", "2026.10.31", None, None]),
+    ("마취통증의학과", 2, ["정ㅇㅇ", None, None, None, None, "구리독자"], ["정ㅇㅇ", "정ㅇㅇ", "2026.10.01", "2026.10.17", None, "구리독자"]),
+    ("외과", 1, ["홍ㅇㅇ", None, None, None, None, "구리독자"], ["홍ㅇㅇ", "홍ㅇㅇ", "2026.10.01", "2026.10.31", None, "구리독자"]),
+    ("수련교육부", "인턴", [None] * 6, ["김ㅇㅇ", "김ㅇㅇ", "2026.10.01", "2026.10.31", None, None]),
+]
+for k, (dept, yr, sep, octb) in enumerate(g_sample):
+    r = 4 + k
+    gi.cell(row=r, column=1, value=dept)
+    gi.cell(row=r, column=2, value=yr)
+    for j, v in enumerate(sep + octb):
+        if v is not None:
+            gi.cell(row=r, column=3 + j, value=v)
+for r in range(4, GURI_LASTROW + 1):
+    for c in range(1, len(g_heads) + 1):
+        cell = gi.cell(row=r, column=c)
+        cell.font, cell.border = f_input, border
+gi[f"{GURI_LASTCOL}{GURI_LASTROW}"].border = border  # 붙여넣기 영역 끝 표시 (구글 시트 변환 시 범위 확보)
+gi.freeze_panes = "C4"
+
+GURI_OUT = "출력_구리근무자"
+GO_FIRST = 6
+GO_LAST = GO_FIRST + GURI_ROWS - 1
+GO = lambda col: f"{GURI_OUT}!${col}${GO_FIRST}:${col}${GO_LAST}"
+
 # ---------------------------------------------------------------- 전공의명단
 ws = wb.create_sheet("전공의명단", 3)
 # (머리글, 너비, 종류) 종류: calc=수식, lk=기본자료 조회, in=입력, key=사번
@@ -387,6 +435,7 @@ cols = [
     ("서울 근무일(기준월)", 10, "calc"), ("구리 근무일(기준월)", 10, "calc"), ("기준월 대표파견행", 10, "calc"),  # AH-AJ
     ("다기관 기록행", 9, "calc"), ("다기관(비고 기재 기간)", 26, "calc"),                                  # AK-AL
     ("서울급여 순번", 9, "calc"), ("판정불가 순번", 9, "calc"), ("급여 판정 근거", 34, "calc"),              # AM-AO
+    ("이름|과", 16, "calc"), ("구리명단행", 9, "calc"), ("구리 근무자명단 근무일(기준월)", 11, "calc"),       # AP-AR
 ]
 NCOL = len(cols)
 for i, (h, w, k) in enumerate(cols, 1):
@@ -459,7 +508,7 @@ for r in range(2, LAST + 1):
     th = "요약!$E$3"
     ws.cell(row=r, column=25, value=(
         f'=IF($B{r}="","",IF($AG{r}="","",IF(IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*{DR("AD")}))>0,$AE{r},'
-        f'IF(N($X{r})<=0,$AG{r},IF($AH{r}+$AI{r}={MD},'
+        f'IF(AND(N($X{r})<=0,$AQ{r}=""),$AG{r},IF($AH{r}+$AI{r}={MD},'
         f'IF(AND($AH{r}>={th},$AI{r}<{th}),"서울병원",IF(AND($AI{r}>={th},$AH{r}<{th}),"구리병원",'
         f'"⚠15일 판정불가(서울 "&$AH{r}&"일/구리 "&$AI{r}&"일)")),'
         f'IF($AJ{r}="",$AE{r},IF(INDEX({DR("T")},$AJ{r})="통합수련",INDEX({DR("S")},$AJ{r}),$AE{r})))))))'))
@@ -469,24 +518,33 @@ for r in range(2, LAST + 1):
         f'IF(IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*({DR("AA")}<>"")))>0,"파견수련계획 입력오류 확인",'
         f'IF(LEFT($Y{r},1)="⚠","서울·구리 15일 판정 불가(양쪽 모두 이상/미만)",'
         f'IF(IF($AC{r}="",0,N(INDEX({PR("T")},$AC{r})))>0,"인턴계획 입력오류 확인",'
-        f'IF(AND($AC{r}<>"",$U{r}<>"파견중",$N{r}<>$AE{r}),"인턴 타지역 근무: 파견 여부 확인","정상"))))))))'))
+        f'IF(AND($AQ{r}<>"",$AG{r}<>"구리병원",IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*({DR("S")}="구리병원")*{DR("W")}))=0),'
+        f'"구리 근무자명단에만 있음(파견수련계획 확인)",'
+        f'IF(AND($AC{r}<>"",$U{r}<>"파견중",$N{r}<>$AE{r}),"인턴 타지역 근무: 파견 여부 확인","정상")))))))))'))
     m = lambda x: f'IFERROR(MATCH({x},{PR("D")},0),IFERROR(MATCH({x}&"",{PR("D")},0),IFERROR(MATCH(VALUE({x}),{PR("D")},0),"")))'
     mb = f'IFERROR(MATCH($B{r},{BR("B")},0),IFERROR(MATCH($B{r}&"",{BR("B")},0),IFERROR(MATCH(VALUE($B{r}),{BR("B")},0),"")))'
     ws.cell(row=r, column=28, value=f'=IF($B{r}="","",{mb})')
     ws.cell(row=r, column=29, value=f'=IF($B{r}="","",{m(f"$B{r}")})')
     ws.cell(row=r, column=30, value=f'=IF(OR($AC{r}="",인턴현황!$G$3=""),"",INDEX({PL}!$M$3:$R${PLAN_LAST},$AC{r},인턴현황!$G$3)&"")')
     ws.cell(row=r, column=31, value=(
-        f'=IF($B{r}="","",IF($M{r}<>"",$M{r},IF($AF{r}<>"",IF(LEFT(INDEX({DR("R")},$AF{r}),1)<>"⚠",INDEX({DR("R")},$AF{r}),{home_base}),{home_base})))'))
+        f'=IF($B{r}="","",IF($M{r}<>"",$M{r},IF(IF($AQ{r}="",FALSE,INDEX({GO("J")},$AQ{r})="구리독자"),"구리병원",'
+        f'IF($AF{r}<>"",IF(LEFT(INDEX({DR("R")},$AF{r}),1)<>"⚠",INDEX({DR("R")},$AF{r}),{home_base}),{home_base}))))'))
     ws.cell(row=r, column=32, value=(
         f'=IF(OR($B{r}="",{KEY}=""),"",IFERROR(MATCH({KEY}&"|파견중",{DR("Y")},0),'
         f'IFERROR(MATCH({KEY}&"|파견예정",{DR("Y")},0),IFERROR(MATCH({KEY}&"|파견종료",{DR("Y")},0),""))))'))
     imon = f'IF(OR($AC{r}="",인턴현황!$K$2=""),"",INDEX({PL}!$M$3:$R${PLAN_LAST},$AC{r},인턴현황!$K$2)&"")'
     ws.cell(row=r, column=33, value=(
         f'=IF($B{r}="","",IF(AND({imon}<>"",LEFT({imon},1)<>"⚠"),LEFT({imon},FIND(" ",{imon})-1),$AE{r}))'))
+    # 서울/구리 근무일: 구리 근무자명단에 있으면 그 날짜가 우선(구리 근무일), 나머지 날은 서울(다른 병원 파견일 제외)
+    d_other = f'IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*({DR("S")}<>"서울병원")*({DR("S")}<>"구리병원")*{DR("W")}))'
     for c, hosp in ((34, "서울병원"), (35, "구리병원")):
-        ws.cell(row=r, column=c, value=(
-            f'=IF($B{r}="","",IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*({DR("S")}="{hosp}")*{DR("W")}))'
-            f'+IF($AG{r}="{hosp}",MAX(0,{MD}-N($X{r})),0))'))
+        base_days = (f'IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*({DR("S")}="{hosp}")*{DR("W")}))'
+                     f'+IF($AG{r}="{hosp}",MAX(0,{MD}-N($X{r})),0)')
+        roster = f'N($AR{r})' if hosp == "구리병원" else f'MAX(0,{MD}-N($AR{r})-{d_other})'
+        ws.cell(row=r, column=c, value=f'=IF($B{r}="","",IF($AQ{r}<>"",{roster},{base_days}))')
+    ws.cell(row=r, column=42, value=f'=IF($B{r}="","",$C{r}&"|"&$F{r})')
+    ws.cell(row=r, column=43, value=f'=IF($B{r}="","",IFERROR(MATCH(ROW()-1,{GO("K")},0),""))')
+    ws.cell(row=r, column=44, value=f'=IF($AQ{r}="","",INDEX({GO("H")},$AQ{r}))')
     ws.cell(row=r, column=36, value=f'=IF(OR($B{r}="",{KEY}=""),"",IFERROR(MATCH({KEY}&"|월",{DR("Z")},0),""))')
     ws.cell(row=r, column=37, value=f'=IF(OR($B{r}="",{KEY}=""),"",IFERROR(MATCH({KEY}&"|다기관",{DR("AE")},0),""))')
     ws.cell(row=r, column=38, value=(
@@ -496,8 +554,8 @@ for r in range(2, LAST + 1):
     ws.cell(row=r, column=40, value=f'=IF(LEFT($Y{r},1)="⚠",COUNTIF($Y$2:$Y{r},"⚠*"),"")')
     dm = f'IF({KEY}="",0,SUMPRODUCT(({DR("Q")}={KEY})*{DR("AD")}))'
     ws.cell(row=r, column=41, value=(
-        f'=IF(OR($B{r}="",$Y{r}=""),"",IF({dm}>0,"다기관 기간 → 소속병원 지급",IF(N($X{r})<=0,"파견 없음 → 그 달 근무병원 지급",'
-        f'IF($AH{r}+$AI{r}={MD},"서울 "&$AH{r}&"일 / 구리 "&$AI{r}&"일 → 15일 이상 근무 병원 지급",'
+        f'=IF(OR($B{r}="",$Y{r}=""),"",IF({dm}>0,"다기관 기간 → 소속병원 지급",IF(AND(N($X{r})<=0,$AQ{r}=""),"파견 없음 → 그 달 근무병원 지급",'
+        f'IF($AH{r}+$AI{r}={MD},"서울 "&$AH{r}&"일 / 구리 "&$AI{r}&"일"&IF($AQ{r}<>""," (구리 근무자명단 반영)","")&" → 15일 이상 근무 병원 지급",'
         f'"타 병원 포함 → "&IF($AJ{r}="","소속",INDEX({DR("T")},$AJ{r}))&" 규칙"))))'))
     for c in range(1, NCOL + 1):
         cell = ws.cell(row=r, column=c)
@@ -607,12 +665,14 @@ checks = [
     ("파견수련계획 입력 오류", f'=SUMPRODUCT(--(LEN({PL2}!$AA$4:$AA${PLAN2_LAST})>0))'),
     ("명단에 없는 파견 기록(등록번호)", f'=SUMPRODUCT(({PL2}!$Q$4:$Q${PLAN2_LAST}<>"")*ISNA(MATCH({PL2}!$Q$4:$Q${PLAN2_LAST},{rg("J")},0)))'),
     ("서울·구리 15일 판정 불가(양쪽 모두 이상/미만)", f'=COUNTIF({rg("Y")},"⚠*")'),
+    ("구리 근무자명단: 명단에 없음/동명이인", f"={GURI_OUT}!$L$2"),
+    ("구리 근무자명단: 날짜 오류", f"={GURI_OUT}!$L$3"),
     ("점검 필요 행(전공의명단 '점검' 열)", f'=SUMPRODUCT(({rg("B")}<>"")*({rg("Z")}<>"정상"))'),
 ]
 for i, (label, fml) in enumerate(checks):
     body(f"A{23+i}", label)
     body(f"B{23+i}", fml)
-sm.conditional_formatting.add("B25:B32", FormulaRule(formula=["B25>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
+sm.conditional_formatting.add("B25:B34", FormulaRule(formula=["B25>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
 for col, w in zip("ABCDEFGHIJ", [34, 10, 3, 14, 12, 14, 14, 3, 20, 10]):
     sm.column_dimensions[col].width = w
 sm.row_dimensions[4].height = 30
@@ -690,6 +750,95 @@ for k in range(100):
         if src != "ROW":
             cell.value = f'=IF(${erow}{r}="","",INDEX({NR(src)},${erow}{r}))'
         cell.font, cell.border, cell.alignment = (f_note if src == "ROW" else f_base), border, center
+
+# ---------------------------------------------------------------- 출력_구리근무자 (구리 근무자명단 해석·명단 연결)
+GURI_OUT = "출력_구리근무자"
+go = wb.create_sheet(GURI_OUT)
+GIN = lambda: f"{GURI_IN}!$A$1:${GURI_LASTCOL}${GURI_LASTROW}"
+NR = lambda col: f"전공의명단!${col}$2:${col}${LAST}"
+GO_FIRST = 6
+GO_LAST = GO_FIRST + GURI_ROWS - 1
+NCOLS_IN = 208  # A~GZ
+go["A1"].value, go["A1"].font = "구리병원 근무자 (구리 근무자명단 기준)", f_title
+go["A2"].value, go["A2"].font = "급여 기준월", f_bold
+go["B2"].value, go["B2"].number_format, go["B2"].font = "=요약!$B$3", 'yyyy"년" m"월"', Font(name=FONT, size=12, bold=True, color="1F3864")
+# 보조: 기준월 키, 월 블록 시작 열, 그 달 '근무자' 확정 여부
+go["N4"].value, go["N4"].font = "보조(수정 금지)", f_note
+go["N5"].value, go["O5"].value = "입력 열번호", "월 키(YYYYMM)"
+for c in ("N5", "O5"):
+    go[c].font, go[c].fill, go[c].border, go[c].alignment = f_head, fill_head2, border, wrap_center
+for j in range(1, NCOLS_IN + 1):
+    r = GO_FIRST + j - 1
+    h = f'(INDEX({GURI_IN}!$A$3:${GURI_LASTCOL}$3,1,{j})&"")'
+    go[f"N{r}"].value = j
+    go[f"O{r}"].value = (f'=IF(ISNUMBER(SEARCH("근무예정자",{h})),IFERROR(VALUE(LEFT({h},4))*100+VALUE(MID({h},6,'
+                         f'MIN(FIND("월",{h}&"월"),FIND(CHAR(10),{h}&CHAR(10)),FIND(" ",{h}&" "))-6)),""),"")')
+    go[f"N{r}"].font = go[f"O{r}"].font = f_note
+go["D2"].value, go["D2"].font = "기준월 키", f_note
+go["E2"].value = "=YEAR(요약!$B$3)*100+MONTH(요약!$B$3)"
+go["F2"].value, go["F2"].font = "블록 시작 열", f_note
+go["G2"].value = f'=IFERROR(MATCH($E$2,$O${GO_FIRST}:$O${GO_FIRST + NCOLS_IN - 1},0),"")'
+go["H2"].value, go["H2"].font = "근무자 확정", f_note
+go["I2"].value = f'=IF($G$2="","",IF(COUNTIF(INDEX({GURI_IN}!$A$4:${GURI_LASTCOL}${GURI_LASTROW},0,$G$2+1),"?*")>0,"확정","예정"))'
+for c in ("E2", "G2", "I2"):
+    go[c].font, go[c].alignment = f_note, center
+go["A3"].value, go["A3"].font = ("※ 입력_구리근무자명단을 해석한 결과입니다(입력 금지). 그 달 '근무자' 칸이 하나라도 채워져 있으면 근무자 기준, 비어 있으면 근무예정자 기준. "
+                                 "날짜가 없으면 1일~말일 근무로 봅니다. 명단 연결은 이름+진료과(인턴은 이름+인턴), 안 되면 이름만으로 합니다."), f_note
+kp = [("K1", "명단 연결", "L1", f'=COUNTIF($L${GO_FIRST}:$L${GO_LAST},"명단 일치*")'),
+      ("K2", "명단에 없음/동명이인", "L2", f'=COUNTIF($L${GO_FIRST}:$L${GO_LAST},"명단에 없음*")+COUNTIF($L${GO_FIRST}:$L${GO_LAST},"동명이인*")'),
+      ("K3", "날짜 오류", "L3", f'=COUNTIF($F${GO_FIRST}:$G${GO_LAST},"⚠*")')]
+for lc, lt, vc, vf in kp:
+    go[lc].value, go[lc].font, go[lc].alignment = lt, f_bold, Alignment(horizontal="right")
+    go[vc].value, go[vc].font, go[vc].border, go[vc].alignment = vf, f_bold, border, center
+go.conditional_formatting.add("L2:L3", FormulaRule(formula=["L2>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
+go_cols = [("원본행", 7), ("진료과", 14), ("연차", 6), ("이름", 10), ("확정/예정", 8), ("시작일", 12), ("종료일", 12),
+           ("기준월 구리 근무일", 10), ("비고", 10), ("구리독자", 8), ("명단행", 7), ("명단 연결", 22)]
+for i, (h, w) in enumerate(go_cols, 1):
+    c = go.cell(row=5, column=i, value=h)
+    c.font, c.fill, c.alignment, c.border = f_head, fill_head, wrap_center, border
+    go.column_dimensions[get_column_letter(i)].width = w
+go.column_dimensions["M"].width = 3
+go.row_dimensions[5].height = 30
+BOM_, EOM2 = "요약!$B$3", "EOMONTH(요약!$B$3,0)"
+for k in range(GURI_ROWS):
+    r = GO_FIRST + k
+    src = 4 + k
+    cell_at = lambda off: f'INDEX({GIN()},$A{r},$G$2+{off})'
+    go[f"A{r}"].value = src
+    # 진료과: 병합 셀이라 첫 행에만 값 → 위에서 이어받기
+    prev = f"B{r-1}" if k > 0 else '""'
+    go[f"B{r}"].value = f'=IF(TRIM(INDEX({GIN()},$A{r},1)&"")<>"",TRIM(INDEX({GIN()},$A{r},1)&""),{prev})'
+    go[f"C{r}"].value = f'=IF(INDEX({GIN()},$A{r},2)="","",INDEX({GIN()},$A{r},2))'
+    go[f"D{r}"].value = (f'=IF($G$2="","",TRIM(IF($I$2="확정",{cell_at(1)}&"",{cell_at(0)}&"")))')
+    go[f"E{r}"].value = f'=IF($D{r}="","",$I$2)'
+
+    def pdate(off, default):
+        x = cell_at(off)
+        return (f'IF({x}="",{default},IF(ISNUMBER({x}),{x},IFERROR(DATE(VALUE(LEFT({x},4)),VALUE(MID({x},6,2)),VALUE(MID({x},9,2))),'
+                f'IFERROR(DATEVALUE(SUBSTITUTE(TRIM({x}),".","-")),"⚠"&{x}))))')
+    go[f"F{r}"].value = f'=IF($D{r}="","",{pdate(2, BOM_)})'
+    go[f"G{r}"].value = f'=IF($D{r}="","",{pdate(3, EOM2)})'
+    go[f"H{r}"].value = (f'=IF($D{r}="","",IF(OR(NOT(ISNUMBER($F{r})),NOT(ISNUMBER($G{r}))),0,'
+                         f'MAX(0,MIN($G{r},{EOM2})-MAX($F{r},{BOM_})+1)))')
+    go[f"I{r}"].value = f'=IF($D{r}="","",TRIM({cell_at(5)}&""))'
+    go[f"J{r}"].value = f'=IF($D{r}="","",IF(ISNUMBER(SEARCH("구리독자",$I{r})),"구리독자",""))'
+    dkey = f'IF(OR($C{r}="인턴",ISNUMBER(SEARCH("수련교육부",$B{r}))),"인턴",$B{r})'
+    cnt_nd = f'COUNTIFS({NR("C")},$D{r},{NR("F")},{dkey})'
+    cnt_n = f'COUNTIF({NR("C")},$D{r})'
+    go[f"K{r}"].value = (f'=IF($D{r}="","",IF({cnt_nd}=1,MATCH($D{r}&"|"&{dkey},{NR("AP")},0),'
+                         f'IF(AND({cnt_nd}=0,{cnt_n}=1),MATCH($D{r},{NR("C")},0),"")))')
+    go[f"L{r}"].value = (f'=IF($D{r}="","",IF($K{r}<>"",IF({cnt_nd}=1,"명단 일치","명단 일치(이름만, 과 다름)"),'
+                         f'IF({cnt_n}=0,IF(COUNTIF(기본자료!$C$2:$C${BLAST},$D{r})>0,"명단에 없음(기본자료에는 있음)","명단에 없음"),"동명이인 확인")))')
+    for col in "ABCDEFGHIJKL":
+        c = go[f"{col}{r}"]
+        c.border, c.alignment = border, center
+        c.font = f_note if col in "AK" else f_base
+    go[f"F{r}"].number_format = go[f"G{r}"].number_format = "yyyy-mm-dd"
+go.freeze_panes = "E6"
+go.auto_filter.ref = f"A5:L{GO_LAST}"
+go.conditional_formatting.add(f"L{GO_FIRST}:L{GO_LAST}", FormulaRule(formula=[f'AND($L{GO_FIRST}<>"",LEFT($L{GO_FIRST},5)<>"명단 일치")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
+go.conditional_formatting.add(f"F{GO_FIRST}:G{GO_LAST}", FormulaRule(formula=[f'LEFT(F{GO_FIRST},1)="⚠"'], font=Font(name=FONT, color="C00000", bold=True)))
+go.conditional_formatting.add(f"A{GO_FIRST}:K{GO_LAST}", FormulaRule(formula=[f'$J{GO_FIRST}="구리독자"'], fill=PatternFill("solid", bgColor="E2EFDA")))
 
 # ---------------------------------------------------------------- 인턴현황 (조회·정렬용)
 iv = wb.create_sheet("인턴현황", 6)
@@ -798,8 +947,10 @@ lines = [
     ("", f_base),
     ("[시트 구분] — 탭 색: 파랑=입력, 초록=출력(자동, 입력 금지), 회색=설정", f_bold),
     ("• 입력_기본자료 / 입력_인턴근무계획 / 입력_파견수련계획: 각 업로드 양식을 그대로 붙여넣는 시트 (오른쪽 초록 머리글 열은 자동 계산)", f_base),
+    ("• 입력_구리근무자명단: 구리병원이 보내는 '전공의(모.자 파견) 근무자 명단'을 양식 그대로(A1부터) 붙여넣는 시트", f_base),
     ("• 입력_전공의명단: 사번·입사장소·비고만 입력 (파란 글씨 칸). 나머지 열은 자동", f_base),
     ("• 출력_서울급여: 급여 기준월(기본=이번 달)에 서울병원이 급여를 지급할 사람 목록과 판정 근거, 판정 불가(⚠) 목록", f_base),
+    ("• 출력_구리근무자: 구리 근무자명단을 급여 기준월로 해석한 결과(이름·과·근무일·구리독자)와 전공의명단 연결 상태", f_base),
     ("• 출력_요약 / 출력_인턴현황: 집계·현황 (자동)", f_base),
     ("• 설정_코드표: 병원·진료과·파견근거·약칭 목록, 설정값(급여 기준월·15일 기준·종료 임박 기준)", f_base),
     ("", f_base),
@@ -824,6 +975,13 @@ lines = [
     ("• 파견근거는 모자 / 통합수련 / 다기관 입니다. 비고(N열, 또는 O열)에 '다기관'이 들어 있으면 다기관 파견으로 인식합니다. 비고가 '2026.09.01-2026.09.30 다기관 파견'처럼 기간으로 시작하면 그 기간을, 아니면 해당 행의 파견 기간을 다기관 기간으로 봅니다.", f_base),
     ("• 다기관 기간에는 전공의명단 '파견근거'에 다기관으로 표시되고, 오른쪽 끝 '다기관(비고 기재 기간)' 열에 기간이 보입니다. 급여 기준월에 다기관 기간이 걸리면 급여는 소속병원이 지급하는 것으로 계산합니다(가정).", f_base),
     ("• 코드표에 없는 병원·진료과·파견근거를 직접 입력하면 오류 팝업이 뜹니다. 붙여넣기는 엑셀 특성상 팝업이 뜨지 않으므로, 대신 해당 행이 빨갛게 표시되고 오른쪽 '입력 오류' 열과 요약에 집계됩니다.", f_base),
+    ("", f_base),
+    ("[구리 근무자명단 업로드]", f_bold),
+    ("• 구리병원 파일의 시트 전체를 복사해 입력_구리근무자명단 A1에 그대로 붙여넣으세요(1~2행 제목, 3행 머리글, 4행부터 자료, 월마다 6칸: 근무예정자·근무자·시작일자·종료일자·휴가·비고). 최대 300행, GZ열까지.", f_base),
+    ("• 급여 기준월에 해당하는 월 블록을 3행 머리글('2026년10월 근무예정자' 등)에서 찾아 읽습니다. 그 달 '근무자' 칸이 하나라도 채워져 있으면 근무자, 아니면 근무예정자를 씁니다. 날짜가 비어 있으면 1일~말일 근무로 봅니다.", f_base),
+    ("• 사번이 없으므로 이름+진료과(인턴은 이름+인턴)로 전공의명단과 연결합니다. 연결 안 됨·동명이인은 출력_구리근무자와 요약에 빨갛게 표시됩니다.", f_base),
+    ("• 명단에 연결된 사람은 구리 근무자명단의 날짜를 구리 근무일로, 그 달의 나머지 날(다른 병원 파견일 제외)을 서울 근무일로 보고 15일 규칙을 적용합니다. 비고 '구리독자'는 입사장소가 비어 있을 때 소속=구리병원으로 씁니다.", f_base),
+    ("• 주의: 머리글의 연도 오타(예: 2027년 7월 자리에 '2026년7월')가 있으면 해당 월을 찾지 못하거나 다른 달로 읽을 수 있습니다. 출력_구리근무자 맨 위의 '블록 시작 열'이 비어 있으면 머리글을 확인하세요.", f_base),
     ("", f_base),
     ("[전공의명단]", f_bold),
     ("• 입력은 사번, 입사장소, 비고뿐입니다. 인적사항은 기본자료에서, 파견 정보(파견근거·병원·과·기간·상태)는 파견수련계획에서 자동 연결됩니다(파견중 > 파견예정 > 파견종료 순으로 대표 1건 표시).", f_base),
@@ -873,6 +1031,10 @@ for sh in wb.worksheets:
             rule.formula = [_fix(f) for f in rule.formula]
 for old, new in RENAME.items():
     wb[old].title = new
+ORDER = ["사용안내", "입력_기본자료", "입력_인턴근무계획", "입력_파견수련계획", "입력_구리근무자명단", "입력_전공의명단",
+         "출력_서울급여", "출력_구리근무자", "출력_요약", "출력_인턴현황", "설정_코드표"]
+wb._sheets = [wb[n] for n in ORDER]
+wb.active = 0
 TAB = {"입력_": "2F5597", "출력_": "548235", "설정_": "7F7F7F"}
 for sh in wb.worksheets:
     for pre, color in TAB.items():
