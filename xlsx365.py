@@ -35,6 +35,7 @@ wrap_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 _FN = [("XLOOKUP", "_xlfn.XLOOKUP"), ("XMATCH", "_xlfn.XMATCH"), ("SEQUENCE", "_xlfn.SEQUENCE"),
        ("LET", "_xlfn.LET"), ("MINIFS", "_xlfn.MINIFS"), ("MAXIFS", "_xlfn.MAXIFS"),
+       ("TEXTJOIN", "_xlfn.TEXTJOIN"), ("UNIQUE", "_xlfn.UNIQUE"),
        ("FILTER", "_xlfn._xlws.FILTER"), ("SORT", "_xlfn._xlws.SORT")]
 
 
