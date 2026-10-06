@@ -1,25 +1,19 @@
-"""전공의·인턴 파견 모니터링 엑셀 (Microsoft 365 전용, 행 수 제한 없음)
+"""전공의·인턴 파견 모니터링 엑셀 (Excel 2019 이상 호환 — Microsoft 365에서도 동작)
 
-- 입력 시트는 엑셀 '표'(Table): 아래에 붙여넣으면 표와 계산 열이 자동으로 늘어난다.
-- 출력 시트는 동적 배열(FILTER 등): 대상 수만큼 자동으로 펼쳐진다.
+- 입력 시트는 엑셀 '표'(Table): 아래에 붙여넣으면 표와 계산 열이 자동으로 늘어난다(행 수 제한 없음).
+- 출력 시트는 정해진 행 수만큼 미리 수식을 넣은 목록(INDEX/MATCH): 표시 한도를 넘으면 경고가 뜬다.
+- Excel 2019에 없는 함수(FILTER·SORT·UNIQUE·SEQUENCE·XLOOKUP·XMATCH·LET)는 쓰지 않는다.
 - DATA=<pickle> 로 실행하면 기존 파일에서 옮긴 입력 자료로 채운다(실제 자료는 저장소에 넣지 않음).
-- VERIFY=1 로 실행하면 LibreOffice 검증용으로 동적 배열을 고정 크기 배열수식으로 기록한다.
 """
 import os
-import re
-import zipfile
-from datetime import date
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter as CL
-from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.worksheet.formula import ArrayFormula
-from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyleInfo
+from openpyxl.styles import Alignment, Font, PatternFill
 
-VERIFY = os.environ.get("VERIFY") == "1"
+from xlsx2019 import (CI, CL, FONT, add_name, border, center, cse, dv, f_base, f_bold, f_input, f_note, f_title,
+                      fill_aux, fill_key, head_cell, make_table, q, save)
+
 DATA = None  # 실제 자료로 채울 때: DATA=<pickle 경로> (입력 시트 값만 담은 사전)
 if os.environ.get("DATA"):
     import pickle
@@ -27,27 +21,13 @@ if os.environ.get("DATA"):
         DATA = pickle.load(fh)
 OUT = os.environ.get("OUT", "전공의_파견_모니터링.xlsx")
 MAXR = 1048576          # 서식·검증 적용 끝 행
-GURI_ROWS_END = 20000   # 구리 근무자명단에서 읽는 끝 행 (사실상 무제한)
+GURI_ROWS_END = 20000   # 구리 근무자명단에서 '근무자 확정' 여부를 볼 끝 행
 GURI_COLS_END = "ZZ"    # 구리 근무자명단에서 읽는 끝 열 (월 블록 약 116개월)
-SPILL_END = 20005       # 출력_구리근무자 결과를 참조하는 끝 행
-VERIFY_ROWS = int(os.environ.get("VERIFY_ROWS", "40"))  # 검증용 배열수식 높이
-
-FONT = "맑은 고딕"
-f_base = Font(name=FONT, size=10)
-f_bold = Font(name=FONT, size=10, bold=True)
-f_head = Font(name=FONT, size=10, bold=True, color="FFFFFF")
-f_input = Font(name=FONT, size=10, color="0000FF")  # 입력값=파랑, 수식=검정
-f_title = Font(name=FONT, size=14, bold=True)
-f_note = Font(name=FONT, size=9, color="7F7F7F")
-fill_head = PatternFill("solid", fgColor="1F3864")
-fill_head2 = PatternFill("solid", fgColor="548235")
-fill_calc = PatternFill("solid", fgColor="F2F2F2")
-fill_key = PatternFill("solid", fgColor="FFFF00")
-thin = Side(style="thin", color="BFBFBF")
-border = Border(left=thin, right=thin, top=thin, bottom=thin)
-center = Alignment(horizontal="center", vertical="center")
-wrap_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-left = Alignment(horizontal="left", vertical="center")
+OUTN = int(os.environ.get("OUTN", "1000"))   # 명단 기반 출력 목록 표시 한도(명)
+GR = int(os.environ.get("GR", "1500"))       # 구리 근무자명단 원본 해석 행 수(4행부터)
+GV = int(os.environ.get("GV", "500"))        # 구리 근무자 목록 표시 한도(명)
+IVN = int(os.environ.get("IVN", "600"))      # 인턴 현황 표시 한도(명)
+CODEN = 40                                   # 코드 목록(병원·진료과 등) 표시 한도
 
 # ---------------------------------------------------------------- 코드 목록
 HOSPITALS = ["서울병원", "인천병원", "구리병원", "창원병원", "제주병원", "오산병원"]
@@ -79,101 +59,6 @@ HOSP_ALIASES = [(h, h) for h in HOSPITALS] + [(h[:-2], h) for h in HOSPITALS] + 
     ("한양대학교병원", "서울병원"), ("한양대병원", "서울병원"), ("한양대서울병원", "서울병원"),
     ("한양대구리병원", "구리병원"), ("에스중앙병원", "제주병원"), ("에스중앙", "제주병원"),
 ]
-
-# ---------------------------------------------------------------- 수식 처리 도우미
-_FN = [("XLOOKUP", "_xlfn.XLOOKUP"), ("XMATCH", "_xlfn.XMATCH"), ("SEQUENCE", "_xlfn.SEQUENCE"),
-       ("LET", "_xlfn.LET"), ("FILTER", "_xlfn._xlws.FILTER"), ("SORT", "_xlfn._xlws.SORT")]
-
-
-def xl(f):
-    """사람이 읽는 수식 → 파일 저장 형식 (365 함수 접두어, LET 변수 접두어)."""
-    if not isinstance(f, str):
-        return f
-    f = re.sub(r"(?<![\w.])(v_[A-Za-z0-9_]+)", r"_xlpm.\1", f)
-    for name, full in _FN:
-        f = re.sub(rf"(?<![\w.]){name}\(", full + "(", f)
-    return f
-
-
-def this_row(table, f):
-    """[@열] → 표[[#This Row],[열]]"""
-    return re.sub(r"\[@([^\]]+)\]", lambda m: f"{table}[[#This Row],[{m.group(1)}]]", f)
-
-
-SPILLS = {}  # 시트 이름 -> 동적 배열 셀 목록
-
-
-def spill(ws, cell, formula, width=1, height=VERIFY_ROWS):
-    """동적 배열 수식. Excel은 cm 메타데이터로 펼치고, 검증 모드에선 고정 크기 배열수식."""
-    f = xl(formula)
-    if VERIFY:
-        col = re.match(r"([A-Z]+)(\d+)", cell)
-        c0 = col.group(1)
-        r0 = int(col.group(2))
-        from openpyxl.utils import column_index_from_string as ci
-        end = f"{CL(ci(c0) + width - 1)}{r0 + height - 1}"
-        ws[cell] = ArrayFormula(f"{cell}:{end}", f)
-    else:
-        ws[cell] = ArrayFormula(cell, f)
-        SPILLS.setdefault(ws.title, []).append(cell)
-
-
-def q(sheet):
-    return f"'{sheet}'"
-
-
-def head_cell(c, text, fill=fill_head):
-    c.value, c.font, c.fill, c.alignment, c.border = text, f_head, fill, wrap_center, border
-
-
-def add_name(wb, name, ref):
-    dn = DefinedName(name, attr_text=xl(ref))
-    try:
-        wb.defined_names[name] = dn
-    except TypeError:
-        wb.defined_names.append(dn)
-
-
-def make_table(ws, tname, top, left_col, cols, rows, style="TableStyleLight9"):
-    """cols: [(머리글, 너비, 'in'|'calc', 수식 또는 None, 숫자형식 또는 None)], rows: 입력 열 값 목록(dict)"""
-    n = max(1, len(rows))
-    tcols = []
-    for j, (h, w, kind, fml, fmt) in enumerate(cols):
-        c = ws.cell(row=top, column=left_col + j)
-        head_cell(c, h, fill_head if kind == "in" else fill_head2)
-        ws.column_dimensions[CL(left_col + j)].width = w
-        tc = TableColumn(id=j + 1, name=h)
-        if kind == "calc":
-            body = xl(this_row(tname, fml))
-            tc.calculatedColumnFormula = TableFormula(attr_text=body[1:] if body.startswith("=") else body)
-        tcols.append(tc)
-        for i in range(n):
-            cell = ws.cell(row=top + 1 + i, column=left_col + j)
-            if kind == "calc":
-                cell.value = xl(this_row(tname, fml))
-                cell.font, cell.fill = f_base, fill_calc
-            else:
-                v = rows[i].get(h) if i < len(rows) else None
-                if v is not None:
-                    cell.value = v
-                cell.font = f_input
-            cell.border = border
-            if fmt:
-                cell.number_format = fmt
-    ref = f"{CL(left_col)}{top}:{CL(left_col + len(cols) - 1)}{top + n}"
-    t = Table(displayName=tname, ref=ref, tableColumns=tcols)
-    t.tableStyleInfo = TableStyleInfo(name=style, showRowStripes=True)
-    t._initialise_columns = lambda: None  # 직접 만든 열 정의 유지
-    ws.add_table(t)
-    return t
-
-
-def dv(ws, sqref, formula1, title, msg, kind="list"):
-    d = DataValidation(type=kind, formula1=xl(formula1), allow_blank=True, showErrorMessage=True,
-                       errorStyle="stop", errorTitle=title, error=msg)
-    ws.add_data_validation(d)
-    d.add(sqref)
-
 
 wb = Workbook()
 wb.remove(wb.active)
@@ -257,17 +142,18 @@ if DATA:
 pcols = [(h, w, "in", None, None) for h, w in zip(ph, [6, 10, 11, 17, 17, 17, 17, 17, 17, 10])]
 pcols.append(("사번키", 11, "calc", '=IF(TRIM([@사번]&"")="","","S|"&TRIM([@사번]&""))', None))
 for k in range(1, 7):
+    r = f'TRIM(INDEX(인턴계획표[#This Row],1,{3 + k})&"")'
+    t1 = f'LEFT({r},FIND(" ",{r})-1)'
+    t2 = f'TRIM(RIGHT(SUBSTITUTE({r}," ",REPT(" ",60)),60))'
     pcols.append((f"정규화{k}", 17, "calc",
-                  f'=LET(v_r,TRIM(INDEX(인턴계획표[#This Row],1,{3 + k})&""),'
-                  f'v_t1,IFERROR(LEFT(v_r,FIND(" ",v_r)-1),""),'
-                  f'v_t2,TRIM(RIGHT(SUBSTITUTE(v_r," ",REPT(" ",60)),60)),'
-                  f'v_h,XLOOKUP(v_t1,병원약칭표[표기],병원약칭표[정식 병원],""),'
-                  f'v_d,XLOOKUP(v_t2,과약칭표[약칭],과약칭표[정식 명칭],""),'
-                  f'IF(v_r="","",IF(OR(v_t1="",v_h="",v_d=""),"⚠"&v_r,v_h&" "&v_d)))', None))
+                  f'=IF({r}="","",IFERROR(INDEX(병원약칭표[정식 병원],MATCH({t1},병원약칭표[표기],0))&" "&'
+                  f'INDEX(과약칭표[정식 명칭],MATCH({t2},과약칭표[약칭],0)),"⚠"&{r}))', None))
+kk = 'INDEX(인턴계획표[#This Row],1,10)&""'
+vv, mm = f"VALUE({kk})", f"ROUND((VALUE({kk})-INT(VALUE({kk})))*100,0)"
 pcols.append(("입사일(비고)", 12, "calc",
-              '=LET(v_k,INDEX(인턴계획표[#This Row],1,10)&"",v_v,IFERROR(VALUE(v_k),""),'
-              'v_m,IFERROR(ROUND((v_v-INT(v_v))*100,0),0),'
-              'IF(v_k="","",IF(AND(ISNUMBER(v_v),v_m>=1,v_m<=12,IFERROR(INT(v_v),0)>=1900),DATE(INT(v_v),v_m,1),v_k)))', "yyyy-mm-dd"))
+              f'=IF({kk}="","",IFERROR(IF(AND(INT({vv})>=1900,{mm}>=1,{mm}<=12),DATE(INT({vv}),{mm},1),{kk}),{kk}))', "yyyy-mm-dd"))
+pcols.append(("표시순번", 7, "calc",
+              '=IF(TRIM([@이름]&"")="","",SUMPRODUCT(--(TRIM(INDEX(인턴계획표[이름],1):[@이름]&"")<>"")))', "0"))
 pcols.append(("입력오류", 8, "calc", '=COUNTIF(인턴계획표[[#This Row],[정규화1]:[정규화6]],"⚠*")', "0"))
 make_table(ip, "인턴계획표", 2, 2, pcols, [dict(zip(ph, r)) for r in plan_rows])
 ip.freeze_panes = "E3"
@@ -328,12 +214,13 @@ def lk(col):
 
 
 def lk_date(col):
-    return (f'=IF([@기본자료행]="","",LET(v_x,INDEX(기본자료표[{col}],[@기본자료행]),IF(v_x="","",IF(NOT(ISNUMBER(v_x)),v_x&"",'
-            f'IF(v_x<1000000,v_x,IF(AND(v_x>=10000101,INT(MOD(v_x,10000)/100)>=1,INT(MOD(v_x,10000)/100)<=12,'
-            f'MOD(v_x,100)>=1,MOD(v_x,100)<=31),DATE(INT(v_x/10000),INT(MOD(v_x,10000)/100),MOD(v_x,100)),v_x&""))))))')
+    x = f"INDEX(기본자료표[{col}],[@기본자료행])"
+    return (f'=IF([@기본자료행]="","",IF({x}="","",IF(NOT(ISNUMBER({x})),{x}&"",IF({x}<1000000,{x},'
+            f'IF(AND({x}>=10000101,INT(MOD({x},10000)/100)>=1,INT(MOD({x},10000)/100)<=12,MOD({x},100)>=1,MOD({x},100)<=31),'
+            f'DATE(INT({x}/10000),INT(MOD({x},10000)/100),MOD({x},100)),{x}&"")))))')
 
 
-home_n = 'IF([@근무지]="","",XLOOKUP(TRIM([@근무지]&""),병원약칭표[표기],병원약칭표[정식 병원],[@근무지]&""))'
+home_n = 'IF([@근무지]="","",IFERROR(INDEX(병원약칭표[정식 병원],MATCH(TRIM([@근무지]&""),병원약칭표[표기],0))&"",[@근무지]&""))'
 ok_now = 'AND([@인턴 이번달]<>"",LEFT([@인턴 이번달],1)<>"⚠")'
 ok_mon = 'AND([@인턴 기준월]<>"",LEFT([@인턴 기준월],1)<>"⚠")'
 seoul, guri, th = "[@서울 근무일(기준월)]", "[@구리 근무일(기준월)]", "판정기준일"
@@ -380,9 +267,9 @@ mcols = [
      f'IF(AND([@구리행]="",COUNTIF(구리_이름,[@이름])>0),"구리 근무자명단 연결 확인(동명이인·과 불일치)","정상")))))))', None),
     ("비고", 16, "in", None, None),
     # ---- 보조 열 (수정 금지)
-    ("기본자료행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(XMATCH("S|"&TRIM([@사번]&""),기본자료표[사번키]),""))', None),
+    ("기본자료행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(MATCH("S|"&TRIM([@사번]&""),기본자료표[사번키],0),""))', None),
     ("이름|과", 14, "calc", '=IF([@이름]="","",[@이름]&"|"&[@수련과목])', None),
-    ("인턴계획행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(XMATCH("S|"&TRIM([@사번]&""),인턴계획표[사번키]),""))', None),
+    ("인턴계획행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(MATCH("S|"&TRIM([@사번]&""),인턴계획표[사번키],0),""))', None),
     ("인턴 이번달", 15, "calc",
      '=IF(OR([@인턴계획행]="",인턴위치_이번=""),"",INDEX(인턴계획표[[정규화1]:[정규화6]],[@인턴계획행],인턴위치_이번)&"")', None),
     ("인턴 기준월", 15, "calc",
@@ -392,12 +279,18 @@ mcols = [
     ("기준월 근무병원", 10, "calc",
      f'=IF(NOT({ROW_ON}),"",IF({ok_mon},LEFT([@인턴 기준월],FIND(" ",[@인턴 기준월])-1),[@소속병원]))', None),
     ("구리행", 7, "calc",
-     '=IF([@이름]="","",LET(v_a,XMATCH([@이름|과],구리_키),IF(ISNUMBER(v_a),v_a,'
-     'IF(AND(COUNTIF(구리_이름,[@이름])=1,COUNTIF(명단표[이름],[@이름])=1),XMATCH([@이름],구리_이름),""))))', None),
+     '=IF([@이름]="","",IFERROR(MATCH([@이름|과],구리_키,0),'
+     'IF(AND(COUNTIF(구리_이름,[@이름])=1,COUNTIF(명단표[이름],[@이름])=1),MATCH([@이름],구리_이름,0),"")))', None),
     ("구리명단 근무일", 8, "calc", '=IF([@구리행]="","",INDEX(구리_근무일,[@구리행]))', "0"),
     ("구리 근무 중", 7, "calc",
-     '=IF([@구리행]="","",LET(v_s,IFERROR(DATEVALUE([@구리 근무 시작일(기준월)]),""),v_e,IFERROR(DATEVALUE([@구리 근무 종료일(기준월)]),""),'
-     'IF(AND(ISNUMBER(v_s),ISNUMBER(v_e)),IF(AND(TODAY()>=v_s,TODAY()<=v_e),"Y",""),"")))', None),
+     '=IF([@구리행]="","",IFERROR(IF(AND(TODAY()>=DATEVALUE([@구리 근무 시작일(기준월)]),'
+     'TODAY()<=DATEVALUE([@구리 근무 종료일(기준월)])),"Y",""),""))', None),
+    # ---- 출력 목록용 순번 (수정 금지)
+    ("서울순번", 7, "calc",
+     '=IF([@급여지급병원(기준월)]="서울병원",COUNTIF(INDEX(명단표[급여지급병원(기준월)],1):[@급여지급병원(기준월)],"서울병원"),"")', "0"),
+    ("판정불가순번", 7, "calc",
+     '=IF(LEFT([@급여지급병원(기준월)],1)="⚠",COUNTIF(INDEX(명단표[급여지급병원(기준월)],1):[@급여지급병원(기준월)],"⚠*"),"")', "0"),
+    ("명단순번", 7, "calc", '=IF(NOT(' + ROW_ON + '),"",SUMPRODUCT(--(TRIM(INDEX(명단표[사번],1):[@사번]&"")<>"")))', "0"),
 ]
 m_rows = DATA["roster_rows"] if DATA else [{"사번": s, "입사장소": h, "비고": n} for s, h, n in [
     ("2261212", "서울병원", "예시 데이터"), ("2261213", "서울병원", "예시 데이터"), ("2261214", "서울병원", "예시 데이터"),
@@ -418,6 +311,7 @@ cf.add(f"{Y}2:{Y}{MAXR}", FormulaRule(formula=[f'AND(${Y}2<>"",${AE}2<>"",${Y}2<
 cf.add(f"{MC['생년월일']}2:{MC['생년월일']}{MAXR}", FormulaRule(formula=[f'ISTEXT(${MC["생년월일"]}2)'], font=Font(name=FONT, color="FF0000", bold=True)))
 
 # ================================================================ 출력_서울급여
+R0 = 6  # 출력 목록 첫 행
 sp = wb.create_sheet("출력_서울급여")
 sp["A1"].value, sp["A1"].font = "서울병원 급여 지급 대상자", f_title
 sp["A2"].value, sp["A2"].font = "급여 기준월", f_bold
@@ -429,75 +323,110 @@ for lc, lt, vc, vf in [("D2", "서울 지급 인원", "E2", f'=COUNTIF({YN},"서
     sp[lc].value, sp[lc].font, sp[lc].alignment = lt, f_bold, Alignment(horizontal="right", vertical="center")
     sp[vc].value, sp[vc].font, sp[vc].alignment, sp[vc].border = vf, Font(name=FONT, size=12, bold=True), center, border
 sp.conditional_formatting.add("I2", FormulaRule(formula=["I2>0"], fill=PatternFill("solid", bgColor="FF0000"), font=Font(name=FONT, color="FFFFFF", bold=True)))
-sp["A3"].value, sp["A3"].font = ("※ 자동으로 펼쳐지는 목록입니다(입력 금지). 노란 행 = 소속은 다른 병원인데 이번 달 서울병원이 지급. "
+sp["K2"].value = f'=IF(E2>{OUTN},"⚠ 표시 한도({OUTN}명) 초과 — 생성 파일의 OUTN을 늘려야 합니다","")'
+sp["K2"].font = Font(name=FONT, size=10, bold=True, color="C00000")
+sp["A3"].value, sp["A3"].font = (f"※ 자동 목록입니다(입력 금지, 최대 {OUTN}명 표시). 노란 행 = 소속은 다른 병원인데 이번 달 서울병원이 지급. "
                                  "급여 기준월은 설정_코드표에서 바꿉니다."), f_note
 sp_heads = [("번호", 5), ("이름", 9), ("사번", 10), ("전공의등록번호", 12), ("수련과목", 13), ("연차", 9), ("소속병원", 10),
             ("구분", 24), ("현재 근무병원", 11), ("구리 근무 시작일", 11), ("구리 근무 종료일", 11),
-            ("서울 근무일", 8), ("구리 근무일", 8), ("판정 근거", 40), ("점검", 26)]
+            ("서울 근무일", 8), ("구리 근무일", 8), ("판정 근거", 40), ("점검", 26), ("(명단 행)", 6)]
 for i, (h, w) in enumerate(sp_heads, 1):
-    head_cell(sp.cell(row=5, column=i), h)
+    head_cell(sp.cell(row=5, column=i), h, fill_aux if h.startswith("(") else None)
     sp.column_dimensions[CL(i)].width = w
 sp.row_dimensions[5].height = 30
-cols_sp = ["명단표[이름]", '명단표[사번]&""', '명단표[전공의등록번호]&""', '명단표[수련과목]&""', '명단표[연차]&""',
-           "명단표[소속병원]",
-           'IF(명단표[소속병원]="서울병원","서울 소속","타 병원 소속("&명단표[소속병원]&") → 서울 지급")',
-           "명단표[현재 근무병원]", '명단표[구리 근무 시작일(기준월)]&""', '명단표[구리 근무 종료일(기준월)]&""',
-           "명단표[서울 근무일(기준월)]", "명단표[구리 근무일(기준월)]", "명단표[급여 판정 근거]", "명단표[점검]"]
-idx = ",".join(str(i) for i in range(1, len(cols_sp) + 1))
-spill(sp, "A6", f'=IF(COUNTIF({YN},"서울병원")=0,"",SEQUENCE(COUNTIF({YN},"서울병원")))')
-spill(sp, "B6", f'=IF(COUNTIF({YN},"서울병원")=0,"대상 없음",FILTER(CHOOSE({{{idx}}},{",".join(cols_sp)}),{YN}="서울병원"))', width=len(cols_sp))
-last = CL(len(sp_heads))
-sp.conditional_formatting.add(f"A6:{last}{SPILL_END}", FormulaRule(formula=['LEFT($H6,2)="타 "'], fill=PatternFill("solid", bgColor="FFF2CC")))
-sp.conditional_formatting.add(f"{last}6:{last}{SPILL_END}", FormulaRule(formula=[f'AND(${last}6<>"",${last}6<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE")))
+ix = lambda col, j: f"INDEX(명단표[{col}],{j})"
+cols_sp = [ix("이름", "{j}"), ix("사번", "{j}") + '&""', ix("전공의등록번호", "{j}") + '&""', ix("수련과목", "{j}") + '&""',
+           ix("연차", "{j}") + '&""', ix("소속병원", "{j}"),
+           f'IF({ix("소속병원", "{j}")}="서울병원","서울 소속","타 병원 소속("&{ix("소속병원", "{j}")}&") → 서울 지급")',
+           ix("현재 근무병원", "{j}"), ix("구리 근무 시작일(기준월)", "{j}") + '&""', ix("구리 근무 종료일(기준월)", "{j}") + '&""',
+           ix("서울 근무일(기준월)", "{j}"), ix("구리 근무일(기준월)", "{j}"), ix("급여 판정 근거", "{j}"), ix("점검", "{j}")]
+HC = CL(len(sp_heads))  # 보조: 명단 행
 e0 = len(sp_heads) + 2
+EHC = CL(e0 + 5)        # 보조: 판정불가 명단 행
+e_cols = [ix("이름", "{j}"), ix("사번", "{j}") + '&""', ix("소속병원", "{j}"), ix("서울 근무일(기준월)", "{j}"), ix("구리 근무일(기준월)", "{j}")]
+for k in range(1, OUTN + 1):
+    r = R0 + k - 1
+    sp[f"{HC}{r}"].value = f"=IFERROR(MATCH({k},명단표[서울순번],0),\"\")"
+    sp[f"A{r}"].value = f'=IF(${HC}{r}="","",{k})'
+    for j, expr in enumerate(cols_sp):
+        sp.cell(row=r, column=2 + j).value = f'=IF(${HC}{r}="","",{expr.format(j="$" + HC + str(r))})'
+    sp[f"{EHC}{r}"].value = f"=IFERROR(MATCH({k},명단표[판정불가순번],0),\"\")"
+    for j, expr in enumerate(e_cols):
+        sp.cell(row=r, column=e0 + j).value = f'=IF(${EHC}{r}="","",{expr.format(j="$" + EHC + str(r))})'
+    sp[f"{HC}{r}"].font = sp[f"{EHC}{r}"].font = f_note
+sp[f"B{R0}"].value = f'=IF(${HC}{R0}="",IF(COUNTIF({YN},"서울병원")=0,"대상 없음",""),{cols_sp[0].format(j="$" + HC + str(R0))})'
+sp.cell(row=R0, column=e0).value = f'=IF(${EHC}{R0}="",IF(COUNTIF({YN},"⚠*")=0,"없음",""),{e_cols[0].format(j="$" + EHC + str(R0))})'
+RN = R0 + OUTN - 1
+last = CL(len(sp_heads) - 1)
+sp.conditional_formatting.add(f"A{R0}:{last}{RN}", FormulaRule(formula=[f'LEFT($H{R0},2)="타 "'], fill=PatternFill("solid", bgColor="FFF2CC")))
+sp.conditional_formatting.add(f"{last}{R0}:{last}{RN}", FormulaRule(formula=[f'AND(${last}{R0}<>"",${last}{R0}<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE")))
 sp.column_dimensions[CL(e0 - 1)].width = 3
 sp.cell(row=4, column=e0, value="⚠ 서울·구리 15일 판정 불가 (양쪽 모두 15일 이상/미만) — 담당자 확인 필요").font = Font(name=FONT, size=10, bold=True, color="C00000")
-for i, (h, w) in enumerate([("이름", 9), ("사번", 10), ("소속병원", 10), ("서울 근무일", 8), ("구리 근무일", 8)]):
-    head_cell(sp.cell(row=5, column=e0 + i), h, PatternFill("solid", fgColor="C00000"))
+for i, (h, w) in enumerate([("이름", 9), ("사번", 10), ("소속병원", 10), ("서울 근무일", 8), ("구리 근무일", 8), ("(명단 행)", 6)]):
+    head_cell(sp.cell(row=5, column=e0 + i), h, fill_aux if h.startswith("(") else PatternFill("solid", fgColor="C00000"))
     sp.column_dimensions[CL(e0 + i)].width = w
-spill(sp, f"{CL(e0)}6", f'=IF(COUNTIF({YN},"⚠*")=0,"없음",FILTER(CHOOSE({{1,2,3,4,5}},명단표[이름],명단표[사번]&"",명단표[소속병원],'
-                        f'명단표[서울 근무일(기준월)],명단표[구리 근무일(기준월)]),LEFT({YN},1)="⚠"))', width=5)
 sp.freeze_panes = "C6"
 
 # ================================================================ 출력_기관명단 (시간외 판정 파일로 복사하는 용도)
 ex = wb.create_sheet("출력_기관명단")
 ex["A1"].value, ex["A1"].font = "기관명단 (급여 기준월 기준) — 시간외근무 판정 파일의 입력_기관명단에 값으로 붙여넣기", f_title
-ex["A2"].value, ex["A2"].font = ("※ A5부터 아래로 펼쳐진 전체를 복사 → 시간외 판정 파일 입력_기관명단의 표 아래에 '값 붙여넣기'. "
+ex["A2"].value, ex["A2"].font = ("※ 아래 '복사할 범위'만 복사 → 시간외 판정 파일 입력_기관명단의 표 아래에 '값 붙여넣기'(빈 행까지 복사하면 표가 쓸데없이 늘어납니다). "
                                  "전월·대상월·익월이 필요하면 설정_코드표의 급여 기준월을 바꿔 가며 반복하세요."), f_note
+ex["A3"].value, ex["A3"].font = "복사할 범위", f_bold
+ex["B3"].value = f'=IF(COUNT($J$5:$J${4 + OUTN})=0,"없음","A5:I"&(4+COUNT($J$5:$J${4 + OUTN})))'
+ex["B3"].font, ex["B3"].fill, ex["B3"].border = f_bold, fill_key, border
+ex["D3"].value = f'=IF(SUMPRODUCT(--(TRIM(명단표[사번]&"")<>""))>{OUTN},"⚠ 표시 한도({OUTN}명) 초과","")'
+ex["D3"].font = Font(name=FONT, size=10, bold=True, color="C00000")
 ex_heads = [("기준월", 9), ("사번", 10), ("이름", 9), ("수련과목", 13), ("연차", 10), ("소속병원", 10),
-            ("기준월 근무병원", 11), ("급여지급병원(기준월)", 13), ("급여 판정 근거", 40)]
+            ("기준월 근무병원", 11), ("급여지급병원(기준월)", 13), ("급여 판정 근거", 40), ("(명단 행)", 6)]
 for i, (h, w) in enumerate(ex_heads, 1):
-    head_cell(ex.cell(row=4, column=i), h)
+    head_cell(ex.cell(row=4, column=i), h, fill_aux if h.startswith("(") else None)
     ex.column_dimensions[CL(i)].width = w
 ex.row_dimensions[4].height = 30
-spill(ex, "A5", '=LET(v_k,TRIM(명단표[사번]&"")<>"",IF(SUM(--v_k)=0,"명단 없음",FILTER(CHOOSE({1,2,3,4,5,6,7,8,9},'
-                'TEXT(급여기준월,"yyyy-mm")&LEFT(명단표[사번],0),명단표[사번]&"",명단표[이름],명단표[수련과목],명단표[연차]&"",'
-                '명단표[소속병원],명단표[기준월 근무병원],명단표[급여지급병원(기준월)],명단표[급여 판정 근거]),v_k)))', width=9)
+ex_cols = ['TEXT(급여기준월,"yyyy-mm")', ix("사번", "{j}") + '&""', ix("이름", "{j}"), ix("수련과목", "{j}"), ix("연차", "{j}") + '&""',
+           ix("소속병원", "{j}"), ix("기준월 근무병원", "{j}"), ix("급여지급병원(기준월)", "{j}"), ix("급여 판정 근거", "{j}")]
+for k in range(1, OUTN + 1):
+    r = 4 + k
+    ex[f"J{r}"].value, ex[f"J{r}"].font = f"=IFERROR(MATCH({k},명단표[명단순번],0),\"\")", f_note
+    for j, expr in enumerate(ex_cols):
+        ex.cell(row=r, column=1 + j).value = f'=IF($J{r}="","",{expr.format(j="$J" + str(r))})'
+ex["A5"].value = f'=IF($J5="","명단 없음",{ex_cols[0]})'
 ex.freeze_panes = "C5"
 
 # ================================================================ 출력_구리근무자
 go = wb.create_sheet("출력_구리근무자")
 GIN = q("입력_구리근무자명단")
 GD = f"{GIN}!$A$4:${GURI_COLS_END}${GURI_ROWS_END}"
+H0 = CI("O")             # 보조 계산 시작 열
+HE = 5 + GR              # 보조 계산 끝 행 (6행 ↔ 원본 4행)
 go["A1"].value, go["A1"].font = "구리병원 근무자 (구리 근무자명단 기준)", f_title
 go["A2"].value, go["A2"].font = "급여 기준월", f_bold
 go["B2"].value, go["B2"].number_format, go["B2"].font = "=급여기준월", 'yyyy"년" m"월"', Font(name=FONT, size=12, bold=True, color="1F3864")
 go["D2"].value, go["D2"].font = "블록 시작 열", f_note
-spill(go, "E2",
-      f'=LET(v_h,{GIN}!$A$3:${GURI_COLS_END}$3&"",v_p1,IFERROR(FIND("월",v_h),999),v_p2,IFERROR(FIND(CHAR(10),v_h),999),'
-      f'v_e,IF(v_p1<v_p2,v_p1,v_p2),v_y,IFERROR(VALUE(LEFT(v_h,4)),0),v_m,IFERROR(VALUE(MID(v_h,6,v_e-6)),0),'
-      f'v_k,IF(ISNUMBER(SEARCH("근무예정자",v_h)),v_y*100+v_m,0),IFERROR(XMATCH(YEAR(급여기준월)*100+MONTH(급여기준월),v_k),""))', height=1)
+# 3행 머리글 'YYYY년M월\n근무예정자'에서 급여 기준월 블록을 찾는다 (한 셀 배열수식)
+hh = f'{GIN}!$A$3:${GURI_COLS_END}$3&""'
+p1, p2 = f'IFERROR(FIND("월",{hh}),999)', f'IFERROR(FIND(CHAR(10),{hh}),999)'
+pe = f"IF({p1}<{p2},{p1},{p2})"
+cse(go, "E2", f'=IFERROR(MATCH(YEAR(급여기준월)*100+MONTH(급여기준월),IF(ISNUMBER(SEARCH("근무예정자",{hh})),'
+              f'IFERROR(VALUE(LEFT({hh},4)),0)*100+IFERROR(VALUE(MID({hh},6,{pe}-6)),0),0),0),"")')
 go["F2"].value, go["F2"].font = "근무자 확정", f_note
 go["G2"].value = f'=IF($E$2="","",IF(COUNTIF(INDEX({GD},0,$E$2+1),"?*")>0,"확정","예정"))'
 for c in ("E2", "G2"):
     go[c].font, go[c].alignment = f_bold, center
 go["A3"].value, go["A3"].font = ("※ 자동 결과(입력 금지). 그 달 '근무자' 칸이 하나라도 채워져 있으면 근무자, 아니면 근무예정자 기준. 날짜가 없으면 1일~말일. "
-                                 "명단 연결: 이름+진료과(인턴은 이름+인턴), 안 되면 이름만. '블록 시작 열'이 비면 3행 머리글(연·월)을 확인하세요."), f_note
-for lc, lt, vc, vf in [("I1", "명단 연결", "J1", f'=COUNTIF($L$6:$L${SPILL_END},"명단 일치*")'),
-                       ("I2", "명단에 없음/동명이인", "J2", f'=COUNTIF($L$6:$L${SPILL_END},"명단에 없음*")+COUNTIF($L$6:$L${SPILL_END},"동명이인*")'),
-                       ("I3", "날짜 오류", "J3", f'=COUNTIF($F$6:$G${SPILL_END},"⚠*")')]:
+                                 "명단 연결: 이름+진료과(인턴은 이름+인턴), 안 되면 이름만. '블록 시작 열'이 비면 3행 머리글(연·월)을 확인하세요. "
+                                 f"원본은 4~{3 + GR}행까지 해석, 목록은 최대 {GV}명 표시. O열부터는 보조 계산(+ 단추로 펼치기)."), f_note
+HCOL = {n: CL(H0 + i) for i, n in enumerate(["원본행", "진료과", "연차", "이름", "시작값", "종료값", "근무일", "비고", "구리독자",
+                                              "이름|과", "명단 연결", "시작일", "종료일", "누계", "순번"])}
+H = lambda n: f"${HCOL[n]}$6:${HCOL[n]}${HE}"
+for lc, lt, vc, vf in [("I1", "명단 연결", "J1", f'=COUNTIF({H("명단 연결")},"명단 일치*")'),
+                       ("I2", "명단에 없음/동명이인", "J2", f'=COUNTIF({H("명단 연결")},"명단에 없음*")+COUNTIF({H("명단 연결")},"동명이인*")'),
+                       ("I3", "날짜 오류", "J3", f'=COUNTIF({H("시작일")},"⚠*")+COUNTIF({H("종료일")},"⚠*")')]:
     go[lc].value, go[lc].font, go[lc].alignment = lt, f_bold, Alignment(horizontal="right")
     go[vc].value, go[vc].font, go[vc].border, go[vc].alignment = vf, f_bold, border, center
+go["K2"].value = (f'=IF(MAX({H("누계")})>{GV},"⚠ 목록 표시 한도({GV}명) 초과",'
+                  f'IF(COUNTA({GIN}!$A${4 + GR}:$B${GURI_ROWS_END})>0,"⚠ 원본 {3 + GR}행 이후 자료는 해석되지 않음",""))')
+go["K2"].font = Font(name=FONT, size=10, bold=True, color="C00000")
 go.conditional_formatting.add("J2:J3", FormulaRule(formula=["J2>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
 go_heads = [("원본행", 6), ("진료과", 14), ("연차", 6), ("이름", 9), ("확정/예정", 8), ("시작일", 11), ("종료일", 11),
             ("기준월 구리 근무일", 9), ("비고", 10), ("구리독자", 8), ("이름|과", 16), ("명단 연결", 24)]
@@ -505,32 +434,69 @@ for i, (h, w) in enumerate(go_heads, 1):
     head_cell(go.cell(row=5, column=i), h)
     go.column_dimensions[CL(i)].width = w
 go.row_dimensions[5].height = 30
+go.cell(row=4, column=H0, value="보조 계산 (수정 금지) — 원본 각 행을 해석").font = f_note
+for n, c in HCOL.items():
+    head_cell(go[f"{c}5"], n, fill_aux)
+    go.column_dimensions[c].width = 10
 BOM = "급여기준월"
-pd = lambda v: (f'IF({v}&""="",{{d}},IF(ISNUMBER({v}),{v},IFERROR(DATE(VALUE(LEFT({v},4)),VALUE(MID({v},6,2)),VALUE(MID({v},9,2))),-1)))')
-spill(go, "A6",
-      f'=IF($E$2="","해당 월 블록 없음",LET(v_g,{GD},v_lr,MAX(IFERROR(XMATCH("?*",INDEX(v_g,0,1)&"",2,-1),0),IFERROR(XMATCH("?*",INDEX(v_g,0,2)&"",2,-1),0),1),'
-      f'v_d,INDEX(v_g,1,1):INDEX(v_g,v_lr,COLUMNS(v_g)),v_r,SEQUENCE(ROWS(v_d)),v_a,TRIM(INDEX(v_d,0,1)&""),v_b,INDEX(v_d,0,2)&"",'
-      f'v_n,TRIM(INDEX(v_d,0,$E$2+IF($G$2="확정",1,0))&""),'
-      f'v_dept,XLOOKUP(v_r,IF(v_a<>"",v_r,0),v_a,"",-1),'
-      f'v_s0,INDEX(v_d,0,$E$2+2),v_e0,INDEX(v_d,0,$E$2+3),'
-      f'v_s,{pd("v_s0").replace("{d}", BOM)},v_e,{pd("v_e0").replace("{d}", "EOMONTH(" + BOM + ",0)")},'
-      f'v_lo,IF(v_s>{BOM},v_s,{BOM}),v_hi,IF(v_e<EOMONTH({BOM},0),v_e,EOMONTH({BOM},0)),'
-      f'v_days,IF((v_s<0)+(v_e<0),0,IF(v_hi-v_lo+1>0,v_hi-v_lo+1,0)),'
-      f'v_note,TRIM(INDEX(v_d,0,$E$2+5)&""),v_gd,IF(ISNUMBER(SEARCH("구리독자",v_note)),"구리독자",""),'
-      f'v_dk,IF((v_b="인턴")+ISNUMBER(SEARCH("수련교육부",v_dept)),"인턴",v_dept),v_key,v_n&"|"&v_dk,'
-      f'v_c1,COUNTIF(명단표[이름|과],v_key),v_c2,COUNTIF(명단표[이름],v_n),'
-      f'v_st,IF(v_c1=1,"명단 일치",IF((v_c1=0)*(v_c2=1),"명단 일치(이름만, 과 다름)",IF(v_c2=0,'
-      f'IF(COUNTIF(기본자료표[이름],v_n)>0,"명단에 없음(기본자료에는 있음)","명단에 없음"),"동명이인 확인"))),'
-      f'v_st2,IF(v_s<0,"⚠"&v_s0,TEXT(v_s,"yyyy-mm-dd")),v_et2,IF(v_e<0,"⚠"&v_e0,TEXT(v_e,"yyyy-mm-dd")),'
-      f'v_x,v_n<>"",IF(SUM(--v_x)=0,"해당 월 근무자 없음",'
-      f'FILTER(CHOOSE({{1,2,3,4,5,6,7,8,9,10,11,12}},v_r+3,v_dept,v_b,v_n,$G$2,v_st2,v_et2,v_days,v_note,v_gd,v_key,v_st),v_x))))', width=12)
-go.conditional_formatting.add(f"L6:L{SPILL_END}", FormulaRule(formula=['AND($L6<>"",LEFT($L6,5)<>"명단 일치")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
-go.conditional_formatting.add(f"F6:G{SPILL_END}", FormulaRule(formula=['LEFT(F6,1)="⚠"'], font=Font(name=FONT, color="C00000", bold=True)))
-go.conditional_formatting.add(f"A6:K{SPILL_END}", FormulaRule(formula=['$J6="구리독자"'], fill=PatternFill("solid", bgColor="E2EFDA")))
+
+
+def gcell(raw, off):
+    return f"INDEX({GIN}!$A{raw}:${GURI_COLS_END}{raw},1,$E$2+{off})"
+
+
+def pdate(raw, off, default):
+    x = gcell(raw, off)
+    return f'IF({x}&""="",{default},IF(ISNUMBER({x}),{x},IFERROR(DATE(VALUE(LEFT({x},4)),VALUE(MID({x},6,2)),VALUE(MID({x},9,2))),-1)))'
+
+
+for i in range(GR):
+    r, raw = 6 + i, 4 + i
+    c = {n: f"${HCOL[n]}{r}" for n in HCOL}
+    a_raw = f'TRIM({GIN}!$A{raw}&"")'
+    name_cell = gcell(raw, 'IF($G$2="확정",1,0)')
+    f = {
+        "원본행": f"={raw}",
+        "진료과": f"={a_raw}" if i == 0 else f'=IF({a_raw}<>"",{a_raw},{HCOL["진료과"]}{r - 1})',
+        "연차": f'={GIN}!$B{raw}&""',
+        "이름": f'=IF($E$2="","",TRIM({name_cell}&""))',
+        "시작값": f'=IF({c["이름"]}="","",{pdate(raw, 2, BOM)})',
+        "종료값": f'=IF({c["이름"]}="","",{pdate(raw, 3, "EOMONTH(" + BOM + ",0)")})',
+        "근무일": (f'=IF({c["이름"]}="","",IF(OR({c["시작값"]}<0,{c["종료값"]}<0),0,'
+                 f'MAX(0,MIN({c["종료값"]},EOMONTH({BOM},0))-MAX({c["시작값"]},{BOM})+1)))'),
+        "비고": f'=IF({c["이름"]}="","",TRIM({gcell(raw, 5)}&""))',
+        "구리독자": f'=IF(ISNUMBER(SEARCH("구리독자",{c["비고"]})),"구리독자","")',
+        "이름|과": (f'=IF({c["이름"]}="","",{c["이름"]}&"|"&IF(OR({c["연차"]}="인턴",'
+                  f'ISNUMBER(SEARCH("수련교육부",{c["진료과"]}))),"인턴",{c["진료과"]}))'),
+        "명단 연결": (f'=IF({c["이름"]}="","",IF(COUNTIF(명단표[이름|과],{c["이름|과"]})=1,"명단 일치",'
+                  f'IF(AND(COUNTIF(명단표[이름|과],{c["이름|과"]})=0,COUNTIF(명단표[이름],{c["이름"]})=1),"명단 일치(이름만, 과 다름)",'
+                  f'IF(COUNTIF(명단표[이름],{c["이름"]})=0,IF(COUNTIF(기본자료표[이름],{c["이름"]})>0,"명단에 없음(기본자료에는 있음)","명단에 없음"),'
+                  f'"동명이인 확인"))))'),
+        "시작일": f'=IF({c["이름"]}="","",IF({c["시작값"]}<0,"⚠"&{gcell(raw, 2)},TEXT({c["시작값"]},"yyyy-mm-dd")))',
+        "종료일": f'=IF({c["이름"]}="","",IF({c["종료값"]}<0,"⚠"&{gcell(raw, 3)},TEXT({c["종료값"]},"yyyy-mm-dd")))',
+        "누계": (f'=IF({c["이름"]}="",0,1)' if i == 0 else f'={HCOL["누계"]}{r - 1}+IF({c["이름"]}="",0,1)'),
+        "순번": f'=IF({c["이름"]}="","",{c["누계"]})',
+    }
+    for n, fm in f.items():
+        go[f"{HCOL[n]}{r}"].value = fm
+go.column_dimensions.group(HCOL["원본행"], HCOL["순번"], hidden=True, outline_level=1)
+vis = [("진료과", None), ("연차", None), ("이름", None), (None, "$G$2"), ("시작일", None), ("종료일", None), ("근무일", None),
+       ("비고", None), ("구리독자", None), ("이름|과", None), ("명단 연결", None)]
+for k in range(1, GV + 1):
+    r = 5 + k
+    go[f"A{r}"].value = f'=IFERROR(INDEX({H("원본행")},MATCH({k},{H("순번")},0)),"")'
+    for j, (n, fixed) in enumerate(vis):
+        go.cell(row=r, column=2 + j).value = f'=IF(ISNUMBER($A{r}),{fixed if fixed else "INDEX(" + H(n) + ",$A" + str(r) + "-3)"},"")'
+go["A6"].value = f'=IF($E$2="","해당 월 블록 없음",IF(MAX({H("누계")})=0,"해당 월 근무자 없음",INDEX({H("원본행")},MATCH(1,{H("순번")},0))))'
+GE = 5 + GV
+go.conditional_formatting.add(f"L6:L{GE}", FormulaRule(formula=['AND($L6<>"",LEFT($L6,5)<>"명단 일치")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
+go.conditional_formatting.add(f"F6:G{GE}", FormulaRule(formula=['LEFT(F6,1)="⚠"'], font=Font(name=FONT, color="C00000", bold=True)))
+go.conditional_formatting.add(f"A6:K{GE}", FormulaRule(formula=['$J6="구리독자"'], fill=PatternFill("solid", bgColor="E2EFDA")))
 go.freeze_panes = "E6"
 GO = q("출력_구리근무자")
-for nm, c in [("구리_키", "K"), ("구리_이름", "D"), ("구리_근무일", "H"), ("구리_독자", "J"), ("구리_시작", "F"), ("구리_종료", "G")]:
-    add_name(wb, nm, f"{GO}!${c}$6:${c}${SPILL_END}")
+for nm, n in [("구리_키", "이름|과"), ("구리_이름", "이름"), ("구리_근무일", "근무일"), ("구리_독자", "구리독자"),
+              ("구리_시작", "시작일"), ("구리_종료", "종료일")]:
+    add_name(wb, nm, f"{GO}!{H(n)}")
 
 # ================================================================ 출력_요약
 sm = wb.create_sheet("출력_요약")
@@ -571,10 +537,13 @@ checks = [
     ("구리 근무자명단: 명단에 없음/동명이인", f"={q('출력_구리근무자')}!$J$2"),
     ("구리 근무자명단: 날짜 오류", f"={q('출력_구리근무자')}!$J$3"),
     ("점검 필요 행(전공의명단 '점검' 열)", '=SUMPRODUCT((TRIM(명단표[사번]&"")<>"")*(명단표[점검]<>"정상"))'),
+    ("출력 표시 한도 초과(서울급여·기관명단·구리·인턴)",
+     f'=(COUNTIF(명단표[급여지급병원(기준월)],"서울병원")>{OUTN})+(SUMPRODUCT(--(TRIM(명단표[사번]&"")<>""))>{OUTN})'
+     f'+({q("출력_구리근무자")}!$K$2<>"")+(SUMPRODUCT(--(TRIM(인턴계획표[이름]&"")<>""))>{IVN})'),
 ]
 for i, (lab, fml) in enumerate(checks):
     r = CK0 + 1 + i
-    sm[f"A{r}"].value, sm[f"B{r}"].value = lab, xl(fml)
+    sm[f"A{r}"].value, sm[f"B{r}"].value = lab, fml
     for c in "AB":
         sm[f"{c}{r}"].border, sm[f"{c}{r}"].font = border, f_base
     sm[f"B{r}"].alignment = center
@@ -588,10 +557,13 @@ for col, heads, keyref, counts in blocks:
     for j, h in enumerate(heads):
         head_cell(sm.cell(row=6, column=c0 + j), h)
         sm.column_dimensions[CL(c0 + j)].width = 14 if j == 0 else 12
-    spill(sm, f"{col}7", f"={keyref}")
-    for j, cnt in enumerate(counts, 1):
-        spill(sm, f"{CL(c0 + j)}7", "=" + cnt.format(k=keyref))
-sm.column_dimensions["A"].width = 36
+    for k in range(1, CODEN + 1):
+        r = 6 + k
+        key = f"${col}{r}"
+        sm[f"{col}{r}"].value = f'=IFERROR(INDEX({keyref},{k})&"","")'
+        for j, cnt in enumerate(counts, 1):
+            sm.cell(row=r, column=c0 + j).value = f'=IF({key}="","",{cnt.format(k=key)})'
+sm.column_dimensions["A"].width = 40
 sm.column_dimensions["B"].width = 12
 for c in "CGJ":
     sm.column_dimensions[c].width = 3
@@ -610,16 +582,19 @@ iv["J2"].value, iv["J2"].font = "급여 기준월 위치→", f_note
 iv["K2"].value = '=IFERROR(MATCH(MONTH(급여기준월),$J$3:$O$3,0),"")'
 for c in ("G3", "I3", "K2"):
     iv[c].font, iv[c].alignment = f_note, center
+iv["L2"].value = f'=IF(SUMPRODUCT(--(TRIM(인턴계획표[이름]&"")<>""))>{IVN},"⚠ 표시 한도({IVN}명) 초과","")'
+iv["L2"].font = Font(name=FONT, size=10, bold=True, color="C00000")
 add_name(wb, "인턴위치_이번", f"{q('출력_인턴현황')}!$G$3")
 add_name(wb, "인턴위치_다음", f"{q('출력_인턴현황')}!$I$3")
 add_name(wb, "인턴위치_기준월", f"{q('출력_인턴현황')}!$K$2")
 iv_heads = ["순번", "이름", "사번", "기본자료 확인", "입사일",
             '="이번 달("&IF($G$3="","계획 외",MONTH(TODAY())&"월")&") 병원"', "이번 달 진료과",
             '="다음 달("&IF($I$3="","계획 외",MONTH(EDATE(TODAY(),1))&"월")&") 병원"', "다음 달 진료과"]
-iv_heads += [f'=TRIM(INDEX(인턴계획표[#Headers],1,{3 + k})&"")' for k in range(1, 7)] + ["입력오류"]
+iv_heads += [f'=TRIM(INDEX(인턴계획표[#Headers],1,{3 + k})&"")' for k in range(1, 7)] + ["입력오류", "(계획 행)"]
 for i, h in enumerate(iv_heads, 1):
-    head_cell(iv.cell(row=5, column=i), h)
+    head_cell(iv.cell(row=5, column=i), h, fill_aux if h.startswith("(") else None)
     iv.column_dimensions[CL(i)].width = 17 if 6 <= i <= 15 else 10
+iv.column_dimensions["Q"].width = 6
 iv.row_dimensions[5].height = 30
 for k in range(6):
     c = CL(10 + k)
@@ -628,48 +603,57 @@ for k in range(6):
 hosp = lambda x: f'IF({x}="","",IF(LEFT({x},1)="⚠",{x},IFERROR(LEFT({x},FIND(" ",{x})-1),{x})))'
 dept = lambda x: f'IF({x}="","",IF(LEFT({x},1)="⚠","",IFERROR(MID({x},FIND(" ",{x})+1,60),"")))'
 NRM = "인턴계획표[[정규화1]:[정규화6]]"
-spill(iv, "A6",
-      f'=LET(v_n,TRIM(인턴계획표[이름]&""),v_x,v_n<>"",'
-      f'v_c,IF($G$3="","",INDEX({NRM},0,$G$3)&""),v_t,IF($I$3="","",INDEX({NRM},0,$I$3)&""),'
-      f'v_ok,IF(ISNUMBER(XMATCH(인턴계획표[사번키],기본자료표[사번키])),"확인","미등록"),'
-      f'v_in,IF(ISNUMBER(인턴계획표[입사일(비고)]),TEXT(인턴계획표[입사일(비고)],"yyyy-mm-dd"),인턴계획표[입사일(비고)]&""),'
-      f'IF(SUM(--v_x)=0,"인턴 계획 없음",FILTER(CHOOSE({{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}},'
-      f'인턴계획표[순번]&"",v_n,인턴계획표[사번]&"",v_ok,v_in,{hosp("v_c")},{dept("v_c")},{hosp("v_t")},{dept("v_t")},'
-      f'인턴계획표[정규화1],인턴계획표[정규화2],인턴계획표[정규화3],인턴계획표[정규화4],인턴계획표[정규화5],인턴계획표[정규화6],'
-      f'인턴계획표[입력오류]),v_x)))', width=16)
-END = 20005
+for k in range(1, IVN + 1):
+    r = 5 + k
+    j = f"$Q{r}"
+    ii = lambda col: f"INDEX(인턴계획표[{col}],{j})"
+    cur = f'IF($G$3="","",INDEX({NRM},{j},$G$3)&"")'
+    nxt = f'IF($I$3="","",INDEX({NRM},{j},$I$3)&"")'
+    vals = [ii("순번") + '&""', f'TRIM({ii("이름")}&"")', ii("사번") + '&""',
+            f'IF(COUNTIF(기본자료표[사번키],{ii("사번키")})>0,"확인","미등록")',
+            f'IF(ISNUMBER({ii("입사일(비고)")}),TEXT({ii("입사일(비고)")},"yyyy-mm-dd"),{ii("입사일(비고)")}&"")',
+            hosp(cur), dept(cur), hosp(nxt), dept(nxt)] + [ii(f"정규화{m}") for m in range(1, 7)] + [ii("입력오류")]
+    iv[f"Q{r}"].value, iv[f"Q{r}"].font = f'=IFERROR(MATCH({k},인턴계획표[표시순번],0),"")', f_note
+    for c0, v in enumerate(vals, 1):
+        iv.cell(row=r, column=c0).value = f'=IF({j}="","",{v})'
+iv["B6"].value = f'=IF($Q6="",IF(SUMPRODUCT(--(TRIM(인턴계획표[이름]&"")<>""))=0,"인턴 계획 없음",""),TRIM(INDEX(인턴계획표[이름],$Q6)&""))'
+END = 5 + IVN
 iv.conditional_formatting.add(f"D6:D{END}", FormulaRule(formula=['$D6="미등록"'], fill=PatternFill("solid", bgColor="FFC7CE")))
 iv.conditional_formatting.add(f"J6:O{END}", FormulaRule(formula=['LEFT(J6,1)="⚠"'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="C00000", bold=True)))
 iv.conditional_formatting.add(f"J5:O{END}", FormulaRule(formula=['J$3=MONTH(TODAY())'], fill=PatternFill("solid", bgColor="FFF2CC")))
 iv.freeze_panes = "D6"
 # 월별 병원별 인원
-iv.column_dimensions["Q"].width = 3
-iv["R2"].value, iv["R2"].font = "월별 병원별 인턴 인원", f_bold
-head_cell(iv["R3"], "병원")
-iv["R4"].value, iv["R5"].value = "합계(배정)", "⚠ 오류"
-for c in ("R4", "R5"):
+iv["S2"].value, iv["S2"].font = "월별 병원별 인턴 인원", f_bold
+head_cell(iv["S3"], "병원")
+iv["S4"].value, iv["S5"].value = "합계(배정)", "⚠ 오류"
+for c in ("S4", "S5"):
     iv[c].font, iv[c].border = f_bold, border
-iv.column_dimensions["R"].width = 14
-spill(iv, "R6", "=병원표[병원]")
+iv.column_dimensions["R"].width = 3
+iv.column_dimensions["S"].width = 14
+for k in range(1, CODEN + 1):
+    iv[f"S{5 + k}"].value = f'=IFERROR(INDEX(병원표[병원],{k})&"","")'
 for k in range(6):
-    c = CL(19 + k)
+    c = CL(20 + k)
     head_cell(iv[f"{c}3"], f"={CL(10 + k)}5")
     iv[f"{c}4"].value = f'=COUNTIF(인턴계획표[정규화{k + 1}],"?*")'
     iv[f"{c}5"].value = f'=COUNTIF(인턴계획표[정규화{k + 1}],"⚠*")'
     for rr in (4, 5):
         iv[f"{c}{rr}"].font, iv[f"{c}{rr}"].border, iv[f"{c}{rr}"].alignment = f_bold, border, center
-    spill(iv, f"{c}6", f'=COUNTIF(인턴계획표[정규화{k + 1}],병원표[병원]&" *")')
+    for kk in range(1, CODEN + 1):
+        iv[f"{c}{5 + kk}"].value = f'=IF($S{5 + kk}="","",COUNTIF(인턴계획표[정규화{k + 1}],$S{5 + kk}&" *"))'
     iv.column_dimensions[c].width = 10
 
 # ================================================================ 사용안내
 gd = wb.create_sheet("사용안내", 0)
 lines = [
-    ("전공의·인턴 파견 모니터링 사용 안내 (Microsoft 365 전용, 인원 제한 없음)", f_title),
+    ("전공의·인턴 파견 모니터링 사용 안내 (Excel 2019 이상 · Microsoft 365 공통)", f_title),
     ("", f_base),
     ("[시트 구분] — 탭 색: 파랑=입력, 초록=출력(자동, 입력 금지), 회색=설정", f_bold),
     ("• 입력_기본자료 / 입력_인턴근무계획 / 입력_전공의명단: 엑셀 '표'. 표 바로 아래(또는 첫 자료 행)에 붙여넣으면 표가 자동으로 늘어나고 초록 머리글 계산 열도 자동으로 채워집니다.", f_base),
-    ("• 입력_구리근무자명단: 구리병원 파일의 시트를 A1에 양식 그대로 붙여넣는 시트(병합 셀이 있어 표가 아님). 2만 행·ZZ열까지 읽습니다.", f_base),
-    ("• 출력_서울급여 / 출력_구리근무자 / 출력_요약 / 출력_인턴현황: 대상 수만큼 자동으로 펼쳐지는 목록(동적 배열). 셀을 지우거나 아래에 입력하지 마세요(#SPILL! 오류).", f_base),
+    ("• 입력_구리근무자명단: 구리병원 파일의 시트를 A1에 양식 그대로 붙여넣는 시트(병합 셀이 있어 표가 아님). 4행부터 "+str(GR)+"행("+str(3 + GR)+"행까지)·ZZ열까지 해석합니다.", f_base),
+    ("• 출력_서울급여 / 출력_구리근무자 / 출력_요약 / 출력_인턴현황 / 출력_기관명단: 미리 수식이 들어 있는 고정 행 목록. 셀을 지우거나 덮어쓰지 마세요.", f_base),
+    (f"• 출력 표시 한도: 서울급여·기관명단 {OUTN}명, 구리 근무자 {GV}명, 인턴현황 {IVN}명, 코드 목록 {CODEN}개. 넘으면 시트 위쪽과 출력_요약에 ⚠ 경고가 뜹니다(입력 표는 제한 없음).", f_base),
+    ("• 회색 머리글 '(명단 행)'·'(계획 행)' 열과 출력_구리근무자 O열 이후(+ 단추로 펼침)는 목록을 만드는 보조 계산입니다(수정 금지).", f_base),
     ("• 설정_코드표: 병원·진료과·인턴구분·약칭 목록(표)과 설정값(급여 기준월·15일 기준).", f_base),
     ("• 출력_기관명단: 급여 기준월의 전원 기관(근무병원·급여지급병원) — 시간외근무 판정 파일의 입력_기관명단에 값으로 붙여넣는 용도", f_base),
     ("", f_base),
@@ -693,7 +677,8 @@ lines = [
     ("• 소속병원 = 입사장소 → (비어 있으면) 구리 근무자명단 비고 '구리독자'면 구리병원 → 기본자료 근무지 순서로 정합니다.", f_base),
     ("", f_base),
     ("[참고]", f_bold),
-    ("• Microsoft 365(또는 Excel 2021 이상)에서만 정상 동작합니다. 구버전에서는 출력 시트가 오류로 보입니다.", f_base),
+    ("• Excel 2019·2021·Microsoft 365에서 같은 결과가 나옵니다(FILTER·XLOOKUP 같은 365 전용 함수를 쓰지 않음). 2016 이하는 확인하지 않았습니다.", f_base),
+    ("• 목록 순서는 입력_전공의명단(인턴은 인턴근무계획) 행 순서입니다. 다른 순서로 보려면 출력 시트를 복사해 값으로 붙여넣은 뒤 정렬하세요.", f_base),
     ("• 개인정보(생년월일·면허번호 등)가 포함되므로 파일 암호 설정과 접근 권한 관리를 권장합니다.", f_base),
 ]
 for i, (tx, fo) in enumerate(lines, 1):
@@ -710,51 +695,5 @@ for sh in wb.worksheets:
     for pre, color in {"입력_": "2F5597", "출력_": "548235", "설정_": "7F7F7F"}.items():
         if sh.title.startswith(pre):
             sh.sheet_properties.tabColor = color
-    for row in sh.iter_rows():
-        for c in row:
-            if isinstance(c.value, str) and c.value.startswith("=") and "_xlfn" not in c.value:
-                c.value = xl(c.value)
-    for cfr in sh.conditional_formatting:
-        for rule in cfr.rules:
-            rule.formula = [xl(f) for f in rule.formula]
-wb.save(OUT)
-
-# ---------------------------------------------------------------- 동적 배열 메타데이터 (Excel이 결과를 펼치도록)
-if SPILLS:
-    META = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-            '<metadata xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-            'xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray">'
-            '<metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" '
-            'pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" '
-            'coerce="1" cellMeta="1"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst>'
-            '<ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}"><xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/>'
-            '</ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>')
-    zin = zipfile.ZipFile(OUT)
-    files = {n: zin.read(n) for n in zin.namelist()}
-    zin.close()
-    wbxml = files["xl/workbook.xml"].decode("utf-8")
-    rels = files["xl/_rels/workbook.xml.rels"].decode("utf-8")
-    rid_target = dict(re.findall(r'Id="(rId\d+)"[^>]*Target="([^"]+)"', rels))
-    rid_target.update({a: b for b, a in re.findall(r'Target="([^"]+)"[^>]*Id="(rId\d+)"', rels)})
-    for name, rid in re.findall(r'<sheet [^>]*name="([^"]+)"[^>]*r:id="(rId\d+)"', wbxml):
-        if name not in SPILLS:
-            continue
-        path = "xl/" + rid_target[rid].lstrip("/").replace("xl/", "")
-        x = files[path].decode("utf-8")
-        for cell in SPILLS[name]:
-            x, n = re.subn(rf'<c r="{cell}"(?![^>]*cm=)', f'<c r="{cell}" cm="1"', x, count=1)
-            assert n == 1, (name, cell)
-        files[path] = x.encode("utf-8")
-    files["xl/metadata.xml"] = META.encode("utf-8")
-    ct = files["[Content_Types].xml"].decode("utf-8")
-    ct = ct.replace("</Types>", '<Override PartName="/xl/metadata.xml" '
-                    'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml"/></Types>')
-    files["[Content_Types].xml"] = ct.encode("utf-8")
-    rels = rels.replace("</Relationships>", '<Relationship Id="rIdMeta1" '
-                        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sheetMetadata" '
-                        'Target="metadata.xml"/></Relationships>')
-    files["xl/_rels/workbook.xml.rels"] = rels.encode("utf-8")
-    with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as zout:
-        for n, data in files.items():
-            zout.writestr(n, data)
-print("saved", OUT, "verify" if VERIFY else "", sum(len(v) for v in SPILLS.values()), "dynamic cells")
+save(wb, OUT)
+print("saved", OUT)
