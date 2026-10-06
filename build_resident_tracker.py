@@ -2,6 +2,7 @@
 
 - 입력 시트는 엑셀 '표'(Table): 아래에 붙여넣으면 표와 계산 열이 자동으로 늘어난다.
 - 출력 시트는 동적 배열(FILTER 등): 대상 수만큼 자동으로 펼쳐진다.
+- DATA=<pickle> 로 실행하면 기존 파일에서 옮긴 입력 자료로 채운다(실제 자료는 저장소에 넣지 않음).
 - VERIFY=1 로 실행하면 LibreOffice 검증용으로 동적 배열을 고정 크기 배열수식으로 기록한다.
 """
 import os
@@ -19,12 +20,17 @@ from openpyxl.worksheet.formula import ArrayFormula
 from openpyxl.worksheet.table import Table, TableColumn, TableFormula, TableStyleInfo
 
 VERIFY = os.environ.get("VERIFY") == "1"
+DATA = None  # 실제 자료로 채울 때: DATA=<pickle 경로> (입력 시트 값만 담은 사전)
+if os.environ.get("DATA"):
+    import pickle
+    with open(os.environ["DATA"], "rb") as fh:
+        DATA = pickle.load(fh)
 OUT = os.environ.get("OUT", "전공의_파견_모니터링.xlsx")
 MAXR = 1048576          # 서식·검증 적용 끝 행
 GURI_ROWS_END = 20000   # 구리 근무자명단에서 읽는 끝 행 (사실상 무제한)
 GURI_COLS_END = "ZZ"    # 구리 근무자명단에서 읽는 끝 열 (월 블록 약 116개월)
 SPILL_END = 20005       # 출력_구리근무자 결과를 참조하는 끝 행
-VERIFY_ROWS = 40        # 검증용 배열수식 높이
+VERIFY_ROWS = int(os.environ.get("VERIFY_ROWS", "40"))  # 검증용 배열수식 높이
 
 FONT = "맑은 고딕"
 f_base = Font(name=FONT, size=10)
@@ -50,7 +56,6 @@ DEPTS = ["내과", "소아청소년과", "신경과", "정신건강의학과", "
          "재활의학과", "마취통증의학과", "영상의학과", "진단검사의학과", "병리과", "가정의학과",
          "응급의학과", "핵의학과", "직업환경의학과", "수련교육부(인턴)"]
 INTERN_ONLY = ["통합", "핵/방", "직/피", "정/영"]
-DISPATCH = ["모자", "통합수련", "다기관"]
 DEPT_ALIASES = [  # (약칭, 정식 명칭) — 사용자 제공 목록
     ("내과", "내과"), ("소아청소년과", "소아청소년과"), ("신경과", "신경과"), ("정신건강의학과", "정신건강의학과"),
     ("피부과", "피부과"), ("외과", "외과"), ("심장혈관흉부외과", "심장혈관흉부외과"), ("정형외과", "정형외과"),
@@ -176,41 +181,42 @@ MD = "DAY(EOMONTH(급여기준월,0))"
 
 # ================================================================ 설정_코드표
 ref = wb.create_sheet("설정_코드표")
+if DATA:
+    HOSPITALS, DEPTS, INTERN_ONLY = DATA["codes"]["병원표"], DATA["codes"]["진료과표"], DATA["codes"]["인턴구분표"]
+    DEPT_ALIASES, HOSP_ALIASES = DATA["codes"]["과약칭표"], DATA["codes"]["병원약칭표"]
 code_tables = [
     ("병원표", "A", [("병원", 14)], [{"병원": h} for h in HOSPITALS]),
     ("진료과표", "C", [("근무과", 18)], [{"근무과": d} for d in DEPTS]),
-    ("근거표", "E", [("파견근거", 12)], [{"파견근거": d} for d in DISPATCH]),
-    ("인턴구분표", "G", [("인턴 구분", 12)], [{"인턴 구분": d} for d in INTERN_ONLY]),
+    ("인턴구분표", "E", [("인턴 구분", 12)], [{"인턴 구분": d} for d in INTERN_ONLY]),
     ("과약칭표", "I", [("약칭", 16), ("정식 명칭", 18)], [{"약칭": a, "정식 명칭": b} for a, b in DEPT_ALIASES]),
     ("병원약칭표", "L", [("표기", 16), ("정식 병원", 12)], [{"표기": a, "정식 병원": b} for a, b in HOSP_ALIASES]),
 ]
 from openpyxl.utils import column_index_from_string as CI
 for tname, col, cdefs, rows in code_tables:
     make_table(ref, tname, 1, CI(col), [(h, w, "in", None, None) for h, w in cdefs], rows, style="TableStyleLight1")
-for c in "BDFHKN":
+for c in "BDFGHKN":
     ref.column_dimensions[c].width = 3
 ref.column_dimensions["O"].width = 26
 ref.column_dimensions["P"].width = 14
 notes = [
     "※ 모든 목록은 엑셀 '표'입니다. 표 바로 아래 행에 입력하면 자동으로 목록이 늘어나고 드롭다운·판정에 바로 반영됩니다.",
-    "※ 병원약칭표(L~M): 인턴근무계획의 지역 단어, 파견수련계획의 모병원명·파견병원을 정식 병원으로 바꿉니다. 실제 기관명은 여기에 추가하세요.",
-    "※ 과약칭표(I~J): 인턴근무계획 월 칸의 마지막 단어, 파견수련계획의 파견과목을 정식 명칭으로 바꿉니다.",
-    "※ 인턴구분표(G): 통합(과 미지정), 핵/방, 직/피, 정/영처럼 인턴 순환에만 쓰는 구분입니다.",
+    "※ 병원약칭표(L~M): 인턴근무계획의 지역 단어와 기본자료의 근무지를 정식 병원으로 바꿉니다. 실제 기관명은 여기에 추가하세요.",
+    "※ 과약칭표(I~J): 인턴근무계획 월 칸의 마지막 단어(진료과 약칭)를 정식 명칭으로 바꿉니다.",
+    "※ 인턴구분표(E): 통합(과 미지정), 핵/방, 직/피, 정/영처럼 인턴 순환에만 쓰는 구분입니다.",
 ]
 for i, t in enumerate(notes):
     ref[f"O{1 + i}"].value, ref[f"O{1 + i}"].font = t, f_base
 head_cell(ref["O8"], "설정값 (노란 칸만 수정)")
 head_cell(ref["P8"], "값")
 for rr, (label, val, fmt, nm) in enumerate([
-        ("급여 기준월(1일)", "=DATE(YEAR(TODAY()),MONTH(TODAY()),1)", "yyyy-mm-dd", "급여기준월"),
-        ("서울·구리 15일 기준(일)", 15, "0", "판정기준일"),
-        ("종료 임박 기준(일)", 30, "0", "임박기준일")], 9):
+        ("급여 기준월(1일)", DATA["settings"][0] if DATA else "=DATE(YEAR(TODAY()),MONTH(TODAY()),1)", "yyyy-mm-dd", "급여기준월"),
+        ("서울·구리 15일 기준(일)", DATA["settings"][1] if DATA else 15, "0", "판정기준일")], 9):
     ref[f"O{rr}"].value, ref[f"O{rr}"].font, ref[f"O{rr}"].border = label, f_bold, border
     c = ref[f"P{rr}"]
     c.value, c.number_format, c.font, c.fill, c.border, c.alignment = val, fmt, f_input, fill_key, border, center
     add_name(wb, nm, f"{q('설정_코드표')}!$P${rr}")
-ref["O12"].value, ref["O12"].font = "※ 급여 기준월: 다른 달을 보려면 그 달 1일 날짜를 입력(기본 수식 = 이번 달 1일).", f_note
-for nm, r in [("병원목록", "병원표[병원]"), ("진료과목록", "진료과표[근무과]"), ("근거목록", "근거표[파견근거]"),
+ref["O11"].value, ref["O12"].font = "※ 급여 기준월: 다른 달을 보려면 그 달 1일 날짜를 입력(기본 수식 = 이번 달 1일).", f_note
+for nm, r in [("병원목록", "병원표[병원]"), ("진료과목록", "진료과표[근무과]"),
               ("병원표기목록", "병원약칭표[표기]"), ("과약칭목록", "과약칭표[약칭]")]:
     add_name(wb, nm, r)
 
@@ -226,6 +232,8 @@ base_rows = [
     ("재직", "222223", "이ㅇㅇ", "인턴", "인턴", "서울", 20260301, "22-2223", 222223, "남", 19990202),
     ("재직", "222224", "박ㅇㅇ", "인턴", "인턴", "구리", 20260301, "22-2224", 222224, "남", 19990303),
 ]
+if DATA:
+    base_rows = DATA["base_rows"]
 bh = ["현재근무 여부", "사번", "이름", "수련과목", "연차", "근무지", "수련개시일", "전공의등록번호", "의사면허번호", "성별", "생년월일", "비고"]
 bw = [11, 11, 10, 14, 11, 9, 12, 14, 12, 6, 12, 16]
 bcols = [(h, w, "in", None, "@" if h in ("사번", "전공의등록번호") else None) for h, w in zip(bh, bw)]
@@ -237,13 +245,15 @@ bs.freeze_panes = "A2"
 ip = wb.create_sheet("입력_인턴근무계획")
 ip.column_dimensions["A"].width = 2
 ip.merge_cells("B1:K1")
-ip["B1"].value, ip["B1"].font, ip["B1"].alignment = "2026년도 하반기 인턴근무계획표(9~2월)", f_title, center
+ip["B1"].value, ip["B1"].font, ip["B1"].alignment = (DATA["plan_title"] if DATA else "2026년도 하반기 인턴근무계획표(9~2월)"), f_title, center
 plan_rows = [
     (1, "김ㅇㅇ", 222222, "구리 안과", "구리 내과", "서울 핵방", "서울 재활의학과", "제주 산부", "서울 소아과", 2026.03),
     (2, "이ㅇㅇ", 222223, "서울 내과", "서울 외과", "구리 통합", "인천 산부인과", "제주 에스중앙 내과", "서울 가정의학과", 2026.03),
     (3, "박ㅇㅇ", 222224, "제주 외과", "서울 내과", "서울 응급", "구리 직피", "서울 정영", "제주 산부", 2026.03),
 ]
 ph = ["순번", "이름", "사번", "9월", "10월", "11월", "12월", "1월", "2월", "비고"]
+if DATA:
+    ph, plan_rows = DATA["plan_headers"], DATA["plan_rows"]
 pcols = [(h, w, "in", None, None) for h, w in zip(ph, [6, 10, 11, 17, 17, 17, 17, 17, 17, 10])]
 pcols.append(("사번키", 11, "calc", '=IF(TRIM([@사번]&"")="","","S|"&TRIM([@사번]&""))', None))
 for k in range(1, 7):
@@ -272,93 +282,6 @@ ip.conditional_formatting.add(f"E3:J{MAXR}", FormulaRule(formula=['COUNTIF($M3:$
                               fill=PatternFill("solid", bgColor="FFC7CE")))
 ip.conditional_formatting.add(f"M3:R{MAXR}", FormulaRule(formula=['LEFT(M3,1)="⚠"'], font=Font(name=FONT, color="C00000", bold=True)))
 
-# ================================================================ 입력_파견수련계획
-dp = wb.create_sheet("입력_파견수련계획")
-dp["A1"].value, dp["A1"].font = "파견 수련계획", f_title
-dp["A2"].value, dp["A2"].font = ("※ 파견수련계획 양식의 '자료 행'(4행부터)을 복사해 이 표의 첫 칸(A4)에 붙여넣으세요. 표가 자동으로 늘어납니다. "
-                                 "초록 머리글 열은 자동 계산이므로 비워 둡니다."), f_note
-dp_rows = [
-    ("한양대학교병원", "R", "내과", 3, "박ㅇㅇ", "21-1111", date(2026, 5, 2), date(2026, 8, 31), "한양대구리병원", "내과", "모자", None, "2026.09.01-2026.09.30 다기관 파견"),
-    ("한양대학교병원", "R", "내과", 3, "박ㅇㅇ", "21-1111", date(2026, 10, 1), date(2026, 10, 31), "한양대구리병원", "내과", "모자", None, None),
-    ("한양대학교병원", "R", "가정의학과", 1, "김ㅇㅇ", "11-1111", date(2026, 10, 21), date(2026, 12, 31), "한양대구리병원", "가정의학과", "통합수련", None, None),
-    ("한양대학교병원", "R", "내과", 2, "이ㅇㅇ", "11-1112", date(2026, 10, 5), date(2026, 12, 31), "에스중앙병원", "내과", "통합수련", None, None),
-    ("한양대구리병원", "R", "마취통증의학과", 2, "정ㅇㅇ", "11-1115", date(2026, 10, 18), date(2026, 12, 31), "한양대학교병원", "마취통증의학과", "모자", None, None),
-    ("한양대학교병원", "R", "산부인과", 3, "최ㅇㅇ", "11-1114", date(2026, 1, 5), date(2026, 3, 31), "창원", "산부인과", "다기관", None, None),
-    ("한양대구리병원", "I", "인턴", "인턴", "박ㅇㅇ", "22-2224", date(2026, 11, 1), date(2026, 11, 30), "한양대학교병원", "응급의학과", "모자", None, None),
-]
-dh = ["연번", "모병원명", "수련종별(I/R)", "수련과목", "연차", "성명", "전공의등록번호", "파견시작일", "파견종료일",
-      "파견일수", "파견병원", "파견과목", "파견근거(모자/통합수련)", "비고", "추가메모"]
-dwid = [6, 15, 8, 13, 7, 9, 12, 11, 11, 8, 15, 13, 12, 18, 26]
-d_in = ["모병원명", "수련종별(I/R)", "수련과목", "연차", "성명", "전공의등록번호", "파견시작일", "파견종료일",
-        "파견병원", "파견과목", "파견근거(모자/통합수련)", "비고", "추가메모"]
-drows = []
-for i, r in enumerate(dp_rows):
-    d = dict(zip(d_in, r))
-    d["연번"] = i + 1
-    drows.append(d)
-dcols = [(h, w, "in", None, ("yyyy-mm-dd" if h in ("파견시작일", "파견종료일") else "@" if h == "전공의등록번호" else None))
-         for h, w in zip(dh, dwid)]
-
-
-def pdate(col):
-    return (f'=LET(v_x,[@{col}],IF(ISNUMBER(v_x),v_x,IF(TRIM(v_x&"")="","",'
-            f'IFERROR(DATE(VALUE(LEFT(v_x,4)),VALUE(MID(v_x,6,2)),VALUE(MID(v_x,9,2))),"⚠"&v_x))))')
-
-
-def norm(col, keys, vals):
-    return f'=LET(v_x,TRIM([@{col}]&""),IF(v_x="","",XLOOKUP(v_x,{keys},{vals},"⚠"&v_x)))'
-
-
-EOMF = "EOMONTH(급여기준월,0)"
-note = 'TRIM([@비고]&" "&[@추가메모])'
-ymd = lambda a, b, c: f'DATE(VALUE(MID(v_n,{a},4)),VALUE(MID(v_n,{b},2)),VALUE(MID(v_n,{c},2)))'
-dcols += [
-    ("키", 11, "calc", '=IF(TRIM([@전공의등록번호]&"")="","","R|"&TRIM([@전공의등록번호]&""))', None),
-    ("시작일(계산)", 11, "calc", pdate("파견시작일"), "yyyy-mm-dd"),
-    ("종료일(계산)", 11, "calc", pdate("파견종료일"), "yyyy-mm-dd"),
-    ("모병원(정규화)", 11, "calc", norm("모병원명", "병원약칭표[표기]", "병원약칭표[정식 병원]"), None),
-    ("파견병원(정규화)", 11, "calc", norm("파견병원", "병원약칭표[표기]", "병원약칭표[정식 병원]"), None),
-    ("파견근거(정규화)", 10, "calc", norm("파견근거(모자/통합수련)", "근거표[파견근거]", "근거표[파견근거]"), None),
-    ("파견과목(정규화)", 14, "calc", norm("파견과목", "과약칭표[약칭]", "과약칭표[정식 명칭]"), None),
-    ("파견일수(계산)", 8, "calc",
-     '=IF(AND(ISNUMBER([@시작일(계산)]),ISNUMBER([@종료일(계산)])),[@종료일(계산)]-[@시작일(계산)]+1,"")', "0"),
-    ("기준월 겹침일수", 9, "calc",
-     f'=IF(ISNUMBER([@시작일(계산)]),MAX(0,MIN(IF(ISNUMBER([@종료일(계산)]),[@종료일(계산)],{EOMF}),{EOMF})'
-     f'-MAX([@시작일(계산)],급여기준월)+1),0)', "0"),
-    ("상태", 9, "calc",
-     '=IF(OR(NOT(ISNUMBER([@시작일(계산)])),[@키]=""),"",IF(TODAY()<[@시작일(계산)],"파견예정",'
-     'IF(AND(ISNUMBER([@종료일(계산)]),TODAY()>[@종료일(계산)]),"파견종료","파견중")))', None),
-    ("키|상태", 16, "calc", '=IF(OR([@키]="",[@상태]=""),"",[@키]&"|"&[@상태])', None),
-    ("키|월", 14, "calc", '=IF(AND([@키]<>"",[@기준월 겹침일수]>0),[@키]&"|월","")', None),
-    ("다기관 시작", 11, "calc",
-     f'=LET(v_n,{note},IF(ISNUMBER(SEARCH("다기관",v_n)),IFERROR({ymd(1, 6, 9)},IF(ISNUMBER([@시작일(계산)]),[@시작일(계산)],"")),""))',
-     "yyyy-mm-dd"),
-    ("다기관 종료", 11, "calc",
-     f'=LET(v_n,{note},IF(ISNUMBER(SEARCH("다기관",v_n)),IFERROR({ymd(12, 17, 20)},IF(ISNUMBER([@종료일(계산)]),[@종료일(계산)],"")),""))',
-     "yyyy-mm-dd"),
-    ("다기관 겹침일수", 9, "calc",
-     f'=IF(AND(ISNUMBER([@다기관 시작]),ISNUMBER([@다기관 종료])),MAX(0,MIN([@다기관 종료],{EOMF})-MAX([@다기관 시작],급여기준월)+1),0)', "0"),
-    ("키|다기관", 14, "calc", '=IF(AND([@키]<>"",ISNUMBER([@다기관 시작])),[@키]&"|다기관","")', None),
-    ("입력오류", 18, "calc",
-     '=IF(COUNTA(파견표[[#This Row],[모병원명]:[파견종료일]],파견표[[#This Row],[파견병원]:[비고]])=0,"",'
-     'IF([@키]="","등록번호 없음",IF(LEFT([@모병원(정규화)],1)="⚠","모병원명 미등록",'
-     'IF([@파견병원(정규화)]="","파견병원 입력",IF(LEFT([@파견병원(정규화)],1)="⚠","파견병원명 미등록",'
-     'IF(LEFT([@파견과목(정규화)],1)="⚠","파견과목 미등록",'
-     'IF(OR([@파견근거(정규화)]="",LEFT([@파견근거(정규화)],1)="⚠"),"파견근거 확인",'
-     'IF(NOT(AND(ISNUMBER([@시작일(계산)]),ISNUMBER([@종료일(계산)]))),"날짜 형식/누락",'
-     'IF([@종료일(계산)]<[@시작일(계산)],"종료일<시작일","")))))))))', None),
-]
-make_table(dp, "파견표", 3, 1, dcols, drows)
-dp.freeze_panes = "H4"
-dv(dp, f"B4:B{MAXR}", "=병원표기목록", "등록되지 않은 값", "병원명 목록에 없습니다. 새 기관이면 '설정_코드표' 병원약칭표에 먼저 추가하세요.")
-dv(dp, f"K4:K{MAXR}", "=병원표기목록", "등록되지 않은 값", "병원명 목록에 없습니다. 새 기관이면 '설정_코드표' 병원약칭표에 먼저 추가하세요.")
-dv(dp, f"L4:L{MAXR}", "=과약칭목록", "등록되지 않은 값", "진료과 목록에 없습니다. 새 과·약칭이면 '설정_코드표' 과약칭표에 먼저 추가하세요.")
-dv(dp, f"M4:M{MAXR}", "=근거목록", "등록되지 않은 값", "파견근거 목록에 없습니다. 새 값이면 '설정_코드표' 근거표에 먼저 추가하세요.")
-dv(dp, f"C4:C{MAXR}", '"I,R"', "수련종별", "I(인턴) 또는 R(레지던트)로 입력하세요.")
-lastc = CL(len(dcols))
-dp.conditional_formatting.add(f"A4:O{MAXR}", FormulaRule(formula=[f'${lastc}4<>""'], fill=PatternFill("solid", bgColor="FFC7CE")))
-dp.conditional_formatting.add(f"{lastc}4:{lastc}{MAXR}", FormulaRule(formula=[f'${lastc}4<>""'], font=Font(name=FONT, color="C00000", bold=True)))
-
 # ================================================================ 입력_구리근무자명단 (양식 그대로 붙여넣기)
 gi = wb.create_sheet("입력_구리근무자명단")
 gi["A1"].value, gi["A1"].font = "전공의(모.자 파견) 근무자 명단", f_title
@@ -367,6 +290,12 @@ g_heads = ["소속", "년차"]
 for y, m in [(2026, m) for m in range(9, 13)] + [(2027, m) for m in range(1, 9)]:
     g_heads += [f"{y}년{m}월\n근무예정자", f"{m}월\n근무자", "근무 시작일자\n(시작일자 작성)", "근무 종료일자\n(종료일자 작성)",
                 f"{m}월 휴가 스케줄\n(휴가일 작성)", "비고"]
+if DATA:
+    gi["A1"].value = gi["A2"].value = None
+    for (r, c), v in DATA["guri_cells"].items():
+        cell = gi.cell(row=r, column=c, value=v)
+        cell.font = f_input if r >= 4 else (f_title if r == 1 else f_bold)
+    g_heads = [DATA["guri_cells"].get((3, c)) for c in range(1, 1 + max(c for (r, c) in DATA["guri_cells"] if r == 3))]
 for i, h in enumerate(g_heads, 1):
     head_cell(gi.cell(row=3, column=i), h)
     gi.column_dimensions[CL(i)].width = 11
@@ -380,7 +309,7 @@ g_sample = [
     ("외과", 1, ["홍ㅇㅇ", None, None, None, None, "구리독자"], ["홍ㅇㅇ", "홍ㅇㅇ", "2026.10.01", "2026.10.31", None, "구리독자"]),
     ("수련교육부", "인턴", [None] * 6, ["김ㅇㅇ", "김ㅇㅇ", "2026.10.01", "2026.10.31", None, None]),
 ]
-for k, (dept, yr, sep, octb) in enumerate(g_sample):
+for k, (dept, yr, sep, octb) in enumerate([] if DATA else g_sample):
     r = 4 + k
     gi.cell(row=r, column=1, value=dept).font = f_input
     gi.cell(row=r, column=2, value=yr).font = f_input
@@ -404,18 +333,10 @@ def lk_date(col):
             f'MOD(v_x,100)>=1,MOD(v_x,100)<=31),DATE(INT(v_x/10000),INT(MOD(v_x,10000)/100),MOD(v_x,100)),v_x&""))))))')
 
 
-def from_dp(col):
-    return f'=IF([@파견기록행]="","",INDEX(파견표[{col}],[@파견기록행]))'
-
-
 home_n = 'IF([@근무지]="","",XLOOKUP(TRIM([@근무지]&""),병원약칭표[표기],병원약칭표[정식 병원],[@근무지]&""))'
 ok_now = 'AND([@인턴 이번달]<>"",LEFT([@인턴 이번달],1)<>"⚠")'
 ok_mon = 'AND([@인턴 기준월]<>"",LEFT([@인턴 기준월],1)<>"⚠")'
 seoul, guri, th = "[@서울 근무일(기준월)]", "[@구리 근무일(기준월)]", "판정기준일"
-rep_basis = 'IF([@파견기록행]="","",INDEX(파견표[파견근거(정규화)],[@파견기록행]))'
-dsum = lambda val, extra="": f'IF([@키]="",0,SUMIFS(파견표[{val}],파견표[키],[@키]{extra}))'
-D_SEOUL = dsum("기준월 겹침일수", ',파견표[파견병원(정규화)],"서울병원"')
-D_GURI = dsum("기준월 겹침일수", ',파견표[파견병원(정규화)],"구리병원"')
 mcols = [
     ("번호", 6, "calc", '=ROW()-ROW(명단표[#Headers])', None),
     ("사번", 11, "in", None, "@"),
@@ -431,59 +352,35 @@ mcols = [
     ("재직여부", 8, "calc", lk("현재근무 여부"), None),
     ("입사장소", 10, "in", None, None),
     ("현재 근무병원", 11, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF(AND([@파견상태]="파견중",[@파견병원]<>""),[@파견병원],'
-     f'IF({ok_now},LEFT([@인턴 이번달],FIND(" ",[@인턴 이번달])-1),{home_n})))', None),
+     f'=IF(NOT({ROW_ON}),"",IF({ok_now},LEFT([@인턴 이번달],FIND(" ",[@인턴 이번달])-1),'
+     f'IF([@구리 근무 중]="Y","구리병원",{home_n})))', None),
     ("현재 진료과", 14, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF(AND([@파견상태]="파견중",[@파견병원]<>""),IF([@파견진료과]<>"",[@파견진료과],"파견과 미입력"),'
-     f'IF({ok_now},MID([@인턴 이번달],FIND(" ",[@인턴 이번달])+1,60),IF([@수련과목]="","",IF([@수련과목]="인턴","수련교육부(인턴)",[@수련과목])))))', None),
-    ("파견근거", 9, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF([@다기관 기록행]<>"",IF(AND(TODAY()>=INDEX(파견표[다기관 시작],[@다기관 기록행]),'
-     f'OR(NOT(ISNUMBER(INDEX(파견표[다기관 종료],[@다기관 기록행]))),TODAY()<=INDEX(파견표[다기관 종료],[@다기관 기록행]))),'
-     f'"다기관",{rep_basis}),{rep_basis}))', None),
-    ("파견병원", 10, "calc", from_dp("파견병원(정규화)"), None),
-    ("파견진료과", 13, "calc", from_dp("파견과목(정규화)"), None),
-    ("파견시작일", 11, "calc", from_dp("시작일(계산)"), "yyyy-mm-dd"),
-    ("파견종료일", 11, "calc", from_dp("종료일(계산)"), "yyyy-mm-dd"),
-    ("파견상태", 9, "calc", from_dp("상태"), None),
-    ("파견기간(일)", 8, "calc", from_dp("파견일수(계산)"), "0"),
-    ("종료까지(일)", 8, "calc", '=IF(AND([@파견상태]="파견중",ISNUMBER([@파견종료일])),[@파견종료일]-TODAY(),"")', "0"),
-    ("급여기준월 파견일수", 9, "calc", f'=IF(NOT({ROW_ON}),"",{dsum("기준월 겹침일수")})', "0"),
+     f'=IF(NOT({ROW_ON}),"",IF({ok_now},MID([@인턴 이번달],FIND(" ",[@인턴 이번달])+1,60),'
+     f'IF([@수련과목]="","",IF([@수련과목]="인턴","수련교육부(인턴)",[@수련과목]))))', None),
+    ("구리 근무 시작일(기준월)", 11, "calc", '=IF([@구리행]="","",INDEX(구리_시작,[@구리행]))', None),
+    ("구리 근무 종료일(기준월)", 11, "calc", '=IF([@구리행]="","",INDEX(구리_종료,[@구리행]))', None),
+    ("구리독자", 8, "calc", '=IF([@구리행]="","",INDEX(구리_독자,[@구리행]))', None),
     ("서울 근무일(기준월)", 9, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF([@구리행]<>"",MAX(0,{MD}-N([@구리명단 근무일])),'
-     f'{D_SEOUL}'
-     f'+IF([@기준월 근무병원]="서울병원",MAX(0,{MD}-N([@급여기준월 파견일수])),0)))', "0"),
+     f'=IF(NOT({ROW_ON}),"",IF([@구리행]<>"",MAX(0,{MD}-N([@구리명단 근무일])),IF([@기준월 근무병원]="서울병원",{MD},0)))', "0"),
     ("구리 근무일(기준월)", 9, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF([@구리행]<>"",N([@구리명단 근무일]),'
-     f'{D_GURI}'
-     f'+IF([@기준월 근무병원]="구리병원",MAX(0,{MD}-N([@급여기준월 파견일수])),0)))', "0"),
+     f'=IF(NOT({ROW_ON}),"",IF([@구리행]<>"",N([@구리명단 근무일]),IF([@기준월 근무병원]="구리병원",{MD},0)))', "0"),
     ("급여지급병원(기준월)", 13, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF([@기준월 근무병원]="","",IF([@다기관 겹침일수]>0,[@소속병원],'
-     f'IF(AND(N([@급여기준월 파견일수])<=0,[@구리행]=""),[@기준월 근무병원],'
-     f'IF({seoul}+{guri}={MD},IF(AND({seoul}>={th},{guri}<{th}),"서울병원",IF(AND({guri}>={th},{seoul}<{th}),"구리병원",'
-     f'"⚠15일 판정불가(서울 "&{seoul}&"일/구리 "&{guri}&"일)")),'
-     f'IF([@기준월 대표파견행]="",[@소속병원],IF(INDEX(파견표[파견근거(정규화)],[@기준월 대표파견행])="통합수련",'
-     f'INDEX(파견표[파견병원(정규화)],[@기준월 대표파견행]),[@소속병원])))))))', None),
+     f'=IF(NOT({ROW_ON}),"",IF([@기준월 근무병원]="","",IF([@구리행]="",[@기준월 근무병원],'
+     f'IF(AND({seoul}>={th},{guri}<{th}),"서울병원",IF(AND({guri}>={th},{seoul}<{th}),"구리병원",'
+     f'"⚠15일 판정불가(서울 "&{seoul}&"일/구리 "&{guri}&"일)")))))', None),
     ("급여 판정 근거", 30, "calc",
-     f'=IF(OR(NOT({ROW_ON}),[@급여지급병원(기준월)]=""),"",IF([@다기관 겹침일수]>0,"다기관 기간 → 소속병원 지급",'
-     f'IF(AND(N([@급여기준월 파견일수])<=0,[@구리행]=""),"파견 없음 → 그 달 근무병원 지급",'
-     f'IF({seoul}+{guri}={MD},"서울 "&{seoul}&"일 / 구리 "&{guri}&"일"&IF([@구리행]<>""," (구리 근무자명단 반영)","")&" → 15일 이상 근무 병원 지급",'
-     f'"타 병원 포함 → "&IF([@기준월 대표파견행]="","소속",INDEX(파견표[파견근거(정규화)],[@기준월 대표파견행]))&" 규칙"))))', None),
-    ("점검", 24, "calc",
+     f'=IF(OR(NOT({ROW_ON}),[@급여지급병원(기준월)]=""),"",IF([@구리행]<>"",'
+     f'"서울 "&{seoul}&"일 / 구리 "&{guri}&"일 (구리 근무자명단) → 15일 이상 근무 병원 지급",'
+     f'IF({ok_mon},"인턴 근무계획 → 그 달 근무병원 지급","구리 근무자명단에 없음 → 소속병원 지급")))', None),
+    ("점검", 26, "calc",
      f'=IF(NOT({ROW_ON}),"",IF([@기본자료행]="","기본자료에 없는 사번",IF(COUNTIF(명단표[사번],[@사번])>1,"중복 사번",'
      f'IF([@소속병원]="","소속(입사장소) 입력",'
-     f'IF(IF([@키]="",0,COUNTIFS(파견표[키],[@키],파견표[입력오류],"?*"))>0,"파견수련계획 입력오류 확인",'
      f'IF(LEFT([@급여지급병원(기준월)],1)="⚠","서울·구리 15일 판정 불가(양쪽 모두 이상/미만)",'
      f'IF(IF([@인턴계획행]="",0,N(INDEX(인턴계획표[입력오류],[@인턴계획행])))>0,"인턴계획 입력오류 확인",'
-     f'IF(AND([@구리행]<>"",[@기준월 근무병원]<>"구리병원",{D_GURI}=0),'
-     f'"구리 근무자명단에만 있음(파견수련계획 확인)",'
-     f'IF(AND([@인턴계획행]<>"",[@파견상태]<>"파견중",[@현재 근무병원]<>[@소속병원]),"인턴 타지역 근무: 파견 여부 확인","정상")))))))))', None),
-    ("다기관(비고 기재 기간)", 22, "calc",
-     '=IF([@다기관 기록행]="","","다기관 "&TEXT(INDEX(파견표[다기관 시작],[@다기관 기록행]),"yyyy-mm-dd")&"~"&'
-     'IF(ISNUMBER(INDEX(파견표[다기관 종료],[@다기관 기록행])),TEXT(INDEX(파견표[다기관 종료],[@다기관 기록행]),"yyyy-mm-dd"),""))', None),
+     f'IF(AND([@구리행]="",COUNTIF(구리_이름,[@이름])>0),"구리 근무자명단 연결 확인(동명이인·과 불일치)","정상")))))))', None),
     ("비고", 16, "in", None, None),
     # ---- 보조 열 (수정 금지)
     ("기본자료행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(XMATCH("S|"&TRIM([@사번]&""),기본자료표[사번키]),""))', None),
-    ("키", 11, "calc", '=IF(TRIM([@전공의등록번호]&"")="","","R|"&TRIM([@전공의등록번호]&""))', None),
     ("이름|과", 14, "calc", '=IF([@이름]="","",[@이름]&"|"&[@수련과목])', None),
     ("인턴계획행", 8, "calc", '=IF(NOT(' + ROW_ON + '),"",IFERROR(XMATCH("S|"&TRIM([@사번]&""),인턴계획표[사번키]),""))', None),
     ("인턴 이번달", 15, "calc",
@@ -491,24 +388,20 @@ mcols = [
     ("인턴 기준월", 15, "calc",
      '=IF(OR([@인턴계획행]="",인턴위치_기준월=""),"",INDEX(인턴계획표[[정규화1]:[정규화6]],[@인턴계획행],인턴위치_기준월)&"")', None),
     ("소속병원", 10, "calc",
-     f'=IF(NOT({ROW_ON}),"",IF([@입사장소]<>"",[@입사장소],IF(IF([@구리행]="",FALSE,INDEX(구리_독자,[@구리행])="구리독자"),"구리병원",'
-     f'IF([@파견기록행]<>"",LET(v_m,INDEX(파견표[모병원(정규화)],[@파견기록행]),IF(AND(v_m<>"",LEFT(v_m,1)<>"⚠"),v_m,{home_n})),{home_n}))))', None),
+     f'=IF(NOT({ROW_ON}),"",IF([@입사장소]<>"",[@입사장소],IF([@구리독자]="구리독자","구리병원",{home_n})))', None),
     ("기준월 근무병원", 10, "calc",
      f'=IF(NOT({ROW_ON}),"",IF({ok_mon},LEFT([@인턴 기준월],FIND(" ",[@인턴 기준월])-1),[@소속병원]))', None),
-    ("파견기록행", 8, "calc",
-     '=IF([@키]="","",IFERROR(XMATCH([@키]&"|파견중",파견표[키|상태]),IFERROR(XMATCH([@키]&"|파견예정",파견표[키|상태]),'
-     'IFERROR(XMATCH([@키]&"|파견종료",파견표[키|상태]),""))))', None),
-    ("기준월 대표파견행", 8, "calc", '=IF([@키]="","",IFERROR(XMATCH([@키]&"|월",파견표[키|월]),""))', None),
-    ("다기관 기록행", 8, "calc", '=IF([@키]="","",IFERROR(XMATCH([@키]&"|다기관",파견표[키|다기관]),""))', None),
-    ("다기관 겹침일수", 8, "calc", f'=IF(NOT({ROW_ON}),0,{dsum("다기관 겹침일수")})', "0"),
     ("구리행", 7, "calc",
      '=IF([@이름]="","",LET(v_a,XMATCH([@이름|과],구리_키),IF(ISNUMBER(v_a),v_a,'
      'IF(AND(COUNTIF(구리_이름,[@이름])=1,COUNTIF(명단표[이름],[@이름])=1),XMATCH([@이름],구리_이름),""))))', None),
     ("구리명단 근무일", 8, "calc", '=IF([@구리행]="","",INDEX(구리_근무일,[@구리행]))', "0"),
+    ("구리 근무 중", 7, "calc",
+     '=IF([@구리행]="","",LET(v_s,IFERROR(DATEVALUE([@구리 근무 시작일(기준월)]),""),v_e,IFERROR(DATEVALUE([@구리 근무 종료일(기준월)]),""),'
+     'IF(AND(ISNUMBER(v_s),ISNUMBER(v_e)),IF(AND(TODAY()>=v_s,TODAY()<=v_e),"Y",""),"")))', None),
 ]
-m_rows = [{"사번": s, "입사장소": h, "비고": n} for s, h, n in [
+m_rows = DATA["roster_rows"] if DATA else [{"사번": s, "입사장소": h, "비고": n} for s, h, n in [
     ("2261212", "서울병원", "예시 데이터"), ("2261213", "서울병원", "예시 데이터"), ("2261214", "서울병원", "예시 데이터"),
-    ("2261215", "서울병원", "예시 데이터(종료됨)"), ("2261216", "구리병원", "예시 데이터"), ("222222", "서울병원", "예시(인턴)"),
+    ("2261215", "서울병원", "예시 데이터"), ("2261216", "구리병원", "예시 데이터"), ("222222", "서울병원", "예시(인턴)"),
     ("222223", "서울병원", "예시(인턴)"), ("222224", "구리병원", "예시(인턴)")]]
 make_table(ws, "명단표", 1, 1, mcols, m_rows)
 MC = {h: CL(i + 1) for i, (h, *_rest) in enumerate(mcols)}
@@ -517,14 +410,11 @@ ws.freeze_panes = "D2"
 dv(ws, f"{MC['입사장소']}2:{MC['입사장소']}{MAXR}", "=병원목록", "등록되지 않은 값",
    "병원 목록에 없습니다. 새 병원이면 '설정_코드표' 병원표에 먼저 추가하세요.")
 cf = ws.conditional_formatting
-B, Z, U, W, Y, AE = MC["사번"], MC["점검"], MC["파견상태"], MC["종료까지(일)"], MC["급여지급병원(기준월)"], MC["소속병원"]
+B, Z, Y, AE = MC["사번"], MC["점검"], MC["급여지급병원(기준월)"], MC["소속병원"]
 cf.add(f"{B}2:{B}{MAXR}", FormulaRule(formula=[f'AND(${B}2<>"",${MC["기본자료행"]}2="")'], fill=PatternFill("solid", bgColor="FF0000"), font=Font(name=FONT, color="FFFFFF", bold=True)))
 cf.add(f"{Z}2:{Z}{MAXR}", FormulaRule(formula=[f'AND(${Z}2<>"",${Z}2<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
 cf.add(f"{Y}2:{Y}{MAXR}", FormulaRule(formula=[f'LEFT(${Y}2,1)="⚠"'], fill=PatternFill("solid", bgColor="FF0000"), font=Font(name=FONT, color="FFFFFF", bold=True)))
 cf.add(f"{Y}2:{Y}{MAXR}", FormulaRule(formula=[f'AND(${Y}2<>"",${AE}2<>"",${Y}2<>${AE}2)'], fill=PatternFill("solid", bgColor="FFFF00")))
-cf.add(f"A2:{MC['파견종료일']}{MAXR}", FormulaRule(formula=[f'AND(${U}2="파견중",${W}2<>"",${W}2<=임박기준일)'], fill=PatternFill("solid", bgColor="F8CBAD")))
-cf.add(f"{U}2:{U}{MAXR}", FormulaRule(formula=[f'${U}2="파견중"'], fill=PatternFill("solid", bgColor="C6E0B4")))
-cf.add(f"{U}2:{U}{MAXR}", FormulaRule(formula=[f'${U}2="파견예정"'], fill=PatternFill("solid", bgColor="BDD7EE")))
 cf.add(f"{MC['생년월일']}2:{MC['생년월일']}{MAXR}", FormulaRule(formula=[f'ISTEXT(${MC["생년월일"]}2)'], font=Font(name=FONT, color="FF0000", bold=True)))
 
 # ================================================================ 출력_서울급여
@@ -542,30 +432,31 @@ sp.conditional_formatting.add("I2", FormulaRule(formula=["I2>0"], fill=PatternFi
 sp["A3"].value, sp["A3"].font = ("※ 자동으로 펼쳐지는 목록입니다(입력 금지). 노란 행 = 소속은 다른 병원인데 이번 달 서울병원이 지급. "
                                  "급여 기준월은 설정_코드표에서 바꿉니다."), f_note
 sp_heads = [("번호", 5), ("이름", 9), ("사번", 10), ("전공의등록번호", 12), ("수련과목", 13), ("연차", 9), ("소속병원", 10),
-            ("구분", 24), ("현재 근무병원", 11), ("파견근거", 9), ("파견병원", 10), ("파견시작일", 11), ("파견종료일", 11),
+            ("구분", 24), ("현재 근무병원", 11), ("구리 근무 시작일", 11), ("구리 근무 종료일", 11),
             ("서울 근무일", 8), ("구리 근무일", 8), ("판정 근거", 40), ("점검", 26)]
 for i, (h, w) in enumerate(sp_heads, 1):
     head_cell(sp.cell(row=5, column=i), h)
     sp.column_dimensions[CL(i)].width = w
 sp.row_dimensions[5].height = 30
-dtext = lambda c: f'IF(ISNUMBER({c}),TEXT({c},"yyyy-mm-dd"),"")'
-cols16 = ["명단표[이름]", '명단표[사번]&""', '명단표[전공의등록번호]&""', '명단표[수련과목]&""', '명단표[연차]&""',
-          "명단표[소속병원]",
-          'IF(명단표[소속병원]="서울병원","서울 소속","타 병원 소속("&명단표[소속병원]&") → 서울 지급")',
-          "명단표[현재 근무병원]", "명단표[파견근거]", "명단표[파견병원]", dtext("명단표[파견시작일]"), dtext("명단표[파견종료일]"),
-          "명단표[서울 근무일(기준월)]", "명단표[구리 근무일(기준월)]", "명단표[급여 판정 근거]", "명단표[점검]"]
-idx = ",".join(str(i) for i in range(1, len(cols16) + 1))
+cols_sp = ["명단표[이름]", '명단표[사번]&""', '명단표[전공의등록번호]&""', '명단표[수련과목]&""', '명단표[연차]&""',
+           "명단표[소속병원]",
+           'IF(명단표[소속병원]="서울병원","서울 소속","타 병원 소속("&명단표[소속병원]&") → 서울 지급")',
+           "명단표[현재 근무병원]", '명단표[구리 근무 시작일(기준월)]&""', '명단표[구리 근무 종료일(기준월)]&""',
+           "명단표[서울 근무일(기준월)]", "명단표[구리 근무일(기준월)]", "명단표[급여 판정 근거]", "명단표[점검]"]
+idx = ",".join(str(i) for i in range(1, len(cols_sp) + 1))
 spill(sp, "A6", f'=IF(COUNTIF({YN},"서울병원")=0,"",SEQUENCE(COUNTIF({YN},"서울병원")))')
-spill(sp, "B6", f'=IF(COUNTIF({YN},"서울병원")=0,"대상 없음",FILTER(CHOOSE({{{idx}}},{",".join(cols16)}),{YN}="서울병원"))', width=16)
-sp.conditional_formatting.add(f"A6:Q{SPILL_END}", FormulaRule(formula=['LEFT($H6,2)="타 "'], fill=PatternFill("solid", bgColor="FFF2CC")))
-sp.conditional_formatting.add(f"Q6:Q{SPILL_END}", FormulaRule(formula=['AND($Q6<>"",$Q6<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE")))
-sp.column_dimensions["R"].width = 3
-sp["S4"].value, sp["S4"].font = "⚠ 서울·구리 15일 판정 불가 (양쪽 모두 15일 이상/미만) — 담당자 확인 필요", Font(name=FONT, size=10, bold=True, color="C00000")
+spill(sp, "B6", f'=IF(COUNTIF({YN},"서울병원")=0,"대상 없음",FILTER(CHOOSE({{{idx}}},{",".join(cols_sp)}),{YN}="서울병원"))', width=len(cols_sp))
+last = CL(len(sp_heads))
+sp.conditional_formatting.add(f"A6:{last}{SPILL_END}", FormulaRule(formula=['LEFT($H6,2)="타 "'], fill=PatternFill("solid", bgColor="FFF2CC")))
+sp.conditional_formatting.add(f"{last}6:{last}{SPILL_END}", FormulaRule(formula=[f'AND(${last}6<>"",${last}6<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE")))
+e0 = len(sp_heads) + 2
+sp.column_dimensions[CL(e0 - 1)].width = 3
+sp.cell(row=4, column=e0, value="⚠ 서울·구리 15일 판정 불가 (양쪽 모두 15일 이상/미만) — 담당자 확인 필요").font = Font(name=FONT, size=10, bold=True, color="C00000")
 for i, (h, w) in enumerate([("이름", 9), ("사번", 10), ("소속병원", 10), ("서울 근무일", 8), ("구리 근무일", 8)]):
-    head_cell(sp.cell(row=5, column=19 + i), h, PatternFill("solid", fgColor="C00000"))
-    sp.column_dimensions[CL(19 + i)].width = w
-spill(sp, "S6", f'=IF(COUNTIF({YN},"⚠*")=0,"없음",FILTER(CHOOSE({{1,2,3,4,5}},명단표[이름],명단표[사번]&"",명단표[소속병원],'
-                f'명단표[서울 근무일(기준월)],명단표[구리 근무일(기준월)]),LEFT({YN},1)="⚠"))', width=5)
+    head_cell(sp.cell(row=5, column=e0 + i), h, PatternFill("solid", fgColor="C00000"))
+    sp.column_dimensions[CL(e0 + i)].width = w
+spill(sp, f"{CL(e0)}6", f'=IF(COUNTIF({YN},"⚠*")=0,"없음",FILTER(CHOOSE({{1,2,3,4,5}},명단표[이름],명단표[사번]&"",명단표[소속병원],'
+                        f'명단표[서울 근무일(기준월)],명단표[구리 근무일(기준월)]),LEFT({YN},1)="⚠"))', width=5)
 sp.freeze_panes = "C6"
 
 # ================================================================ 출력_구리근무자
@@ -622,29 +513,37 @@ go.conditional_formatting.add(f"F6:G{SPILL_END}", FormulaRule(formula=['LEFT(F6,
 go.conditional_formatting.add(f"A6:K{SPILL_END}", FormulaRule(formula=['$J6="구리독자"'], fill=PatternFill("solid", bgColor="E2EFDA")))
 go.freeze_panes = "E6"
 GO = q("출력_구리근무자")
-for nm, c in [("구리_키", "K"), ("구리_이름", "D"), ("구리_근무일", "H"), ("구리_독자", "J")]:
+for nm, c in [("구리_키", "K"), ("구리_이름", "D"), ("구리_근무일", "H"), ("구리_독자", "J"), ("구리_시작", "F"), ("구리_종료", "G")]:
     add_name(wb, nm, f"{GO}!${c}$6:${c}${SPILL_END}")
 
 # ================================================================ 출력_요약
 sm = wb.create_sheet("출력_요약")
-sm["A1"].value, sm["A1"].font = "파견 현황 요약", f_title
+sm["A1"].value, sm["A1"].font = "현황 요약", f_title
 for r, (lab, fml, fmt) in enumerate([("기준일", "=TODAY()", "yyyy-mm-dd"), ("급여 기준월", "=급여기준월", "yyyy-mm-dd"),
-                                     ("15일 기준(일)", "=판정기준일", "0"), ("종료 임박 기준(일)", "=임박기준일", "0")], 2):
+                                     ("15일 기준(일)", "=판정기준일", "0")], 2):
     sm[f"A{r}"].value, sm[f"A{r}"].font = lab, f_bold
     sm[f"B{r}"].value, sm[f"B{r}"].number_format, sm[f"B{r}"].font = fml, fmt, f_base
 sm["C3"].value, sm["C3"].font = "← 설정값은 설정_코드표에서 변경", f_note
-head_cell(sm["A7"], "파견상태")
-head_cell(sm["B7"], "인원")
-for i, s in enumerate(["파견중", "파견예정", "파견종료"]):
-    sm[f"A{8 + i}"].value = s
-    sm[f"B{8 + i}"].value = f'=COUNTIF(명단표[파견상태],A{8 + i})'
-sm["A11"].value, sm["B11"].value = "명단 등록 인원", '=SUMPRODUCT(--(TRIM(명단표[사번]&"")<>""))'
-sm["A12"].value, sm["B12"].value = "종료 임박(파견중)", '=COUNTIFS(명단표[파견상태],"파견중",명단표[종료까지(일)],"<="&임박기준일)'
-for r in range(8, 13):
+head_cell(sm["A6"], "인원 (급여 기준월)")
+head_cell(sm["B6"], "인원")
+people = [
+    ("명단 등록 인원", '=SUMPRODUCT(--(TRIM(명단표[사번]&"")<>""))'),
+    ("서울병원 지급", '=COUNTIF(명단표[급여지급병원(기준월)],"서울병원")'),
+    ("구리병원 지급", '=COUNTIF(명단표[급여지급병원(기준월)],"구리병원")'),
+    ("그 외 병원 지급", '=SUMPRODUCT((명단표[급여지급병원(기준월)]<>"")*(명단표[급여지급병원(기준월)]<>"서울병원")*(명단표[급여지급병원(기준월)]<>"구리병원")*(LEFT(명단표[급여지급병원(기준월)],1)<>"⚠"))'),
+    ("⚠ 판정 불가", '=COUNTIF(명단표[급여지급병원(기준월)],"⚠*")'),
+    ("구리 근무자명단 연결 인원", '=COUNT(명단표[구리행])'),
+]
+for i, (lab, fml) in enumerate(people):
+    r = 7 + i
+    sm[f"A{r}"].value, sm[f"B{r}"].value = lab, fml
+for r in range(7, 7 + len(people)):
     for c in "AB":
         sm[f"{c}{r}"].border, sm[f"{c}{r}"].font = border, f_base
-head_cell(sm["A14"], "데이터 점검")
-head_cell(sm["B14"], "건수")
+    sm[f"B{r}"].alignment = center
+CK0 = 15
+head_cell(sm[f"A{CK0}"], "데이터 점검")
+head_cell(sm[f"B{CK0}"], "건수")
 checks = [
     ("기본자료 인원", '=SUMPRODUCT(--(TRIM(기본자료표[사번]&"")<>""))'),
     ("기본자료 재직 인원", '=COUNTIF(기본자료표[현재근무 여부],"재직")'),
@@ -652,39 +551,35 @@ checks = [
     ("명단 중복 사번", '=SUMPRODUCT((TRIM(명단표[사번]&"")<>"")*(COUNTIF(명단표[사번],명단표[사번])>1))'),
     ("날짜 형식 오류(생년월일/수련개시일)", '=SUMPRODUCT(--ISTEXT(명단표[생년월일]))+SUMPRODUCT(--ISTEXT(명단표[수련개시일]))'),
     ("인턴계획 입력 오류(병원/진료과)", "=SUM(인턴계획표[입력오류])"),
-    ("파견수련계획 입력 오류", '=SUMPRODUCT(--(LEN(파견표[입력오류])>0))'),
-    ("명단에 없는 파견 기록(등록번호)", '=SUMPRODUCT((파견표[키]<>"")*ISNA(XMATCH(파견표[키],명단표[키])))'),
     ("서울·구리 15일 판정 불가", '=COUNTIF(명단표[급여지급병원(기준월)],"⚠*")'),
-    ("구리 근무자명단: 명단에 없음/동명이인", f"={GO}!$J$2"),
-    ("구리 근무자명단: 날짜 오류", f"={GO}!$J$3"),
+    ("구리 근무자명단: 명단에 없음/동명이인", f"={q('출력_구리근무자')}!$J$2"),
+    ("구리 근무자명단: 날짜 오류", f"={q('출력_구리근무자')}!$J$3"),
     ("점검 필요 행(전공의명단 '점검' 열)", '=SUMPRODUCT((TRIM(명단표[사번]&"")<>"")*(명단표[점검]<>"정상"))'),
 ]
 for i, (lab, fml) in enumerate(checks):
-    r = 15 + i
+    r = CK0 + 1 + i
     sm[f"A{r}"].value, sm[f"B{r}"].value = lab, xl(fml)
     for c in "AB":
         sm[f"{c}{r}"].border, sm[f"{c}{r}"].font = border, f_base
     sm[f"B{r}"].alignment = center
-sm.conditional_formatting.add(f"B17:B{14 + len(checks)}", FormulaRule(formula=["B17>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
-blocks = [("D", ["병원", "현재 근무", "급여 지급(기준월)", "파견 수용(파견중)"], "병원표[병원]",
-           ["COUNTIF(명단표[현재 근무병원],{k})", "COUNTIF(명단표[급여지급병원(기준월)],{k})",
-            'COUNTIFS(명단표[파견병원],{k},명단표[파견상태],"파견중")']),
-          ("I", ["현재 진료과", "인원"], "진료과표[근무과]", ["COUNTIF(명단표[현재 진료과],{k})"]),
-          ("L", ["인턴 구분", "인원"], "인턴구분표[인턴 구분]", ["COUNTIF(명단표[현재 진료과],{k})"]),
-          ("O", ["파견근거", "인원"], "근거표[파견근거]", ["COUNTIF(명단표[파견근거],{k})"])]
+sm.conditional_formatting.add(f"B{CK0 + 3}:B{CK0 + len(checks)}", FormulaRule(formula=[f"B{CK0 + 3}>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
+blocks = [("D", ["병원", "현재 근무", "급여 지급(기준월)"], "병원표[병원]",
+           ["COUNTIF(명단표[현재 근무병원],{k})", "COUNTIF(명단표[급여지급병원(기준월)],{k})"]),
+          ("H", ["현재 진료과", "인원"], "진료과표[근무과]", ["COUNTIF(명단표[현재 진료과],{k})"]),
+          ("K", ["인턴 구분", "인원"], "인턴구분표[인턴 구분]", ["COUNTIF(명단표[현재 진료과],{k})"])]
 for col, heads, keyref, counts in blocks:
     c0 = CI(col)
     for j, h in enumerate(heads):
-        head_cell(sm.cell(row=7, column=c0 + j), h)
+        head_cell(sm.cell(row=6, column=c0 + j), h)
         sm.column_dimensions[CL(c0 + j)].width = 14 if j == 0 else 12
-    spill(sm, f"{col}8", f"={keyref}")
+    spill(sm, f"{col}7", f"={keyref}")
     for j, cnt in enumerate(counts, 1):
-        spill(sm, f"{CL(c0 + j)}8", "=" + cnt.format(k=keyref))
+        spill(sm, f"{CL(c0 + j)}7", "=" + cnt.format(k=keyref))
 sm.column_dimensions["A"].width = 36
 sm.column_dimensions["B"].width = 12
-for c in "CHKN":
+for c in "CGJ":
     sm.column_dimensions[c].width = 3
-sm.row_dimensions[7].height = 30
+sm.row_dimensions[6].height = 30
 
 # ================================================================ 출력_인턴현황
 iv = wb.create_sheet("출력_인턴현황")
@@ -756,15 +651,15 @@ lines = [
     ("전공의·인턴 파견 모니터링 사용 안내 (Microsoft 365 전용, 인원 제한 없음)", f_title),
     ("", f_base),
     ("[시트 구분] — 탭 색: 파랑=입력, 초록=출력(자동, 입력 금지), 회색=설정", f_bold),
-    ("• 입력_기본자료 / 입력_인턴근무계획 / 입력_파견수련계획 / 입력_전공의명단: 엑셀 '표'. 표 바로 아래(또는 첫 자료 행)에 붙여넣으면 표가 자동으로 늘어나고 초록 머리글 계산 열도 자동으로 채워집니다.", f_base),
+    ("• 입력_기본자료 / 입력_인턴근무계획 / 입력_전공의명단: 엑셀 '표'. 표 바로 아래(또는 첫 자료 행)에 붙여넣으면 표가 자동으로 늘어나고 초록 머리글 계산 열도 자동으로 채워집니다.", f_base),
     ("• 입력_구리근무자명단: 구리병원 파일의 시트를 A1에 양식 그대로 붙여넣는 시트(병합 셀이 있어 표가 아님). 2만 행·ZZ열까지 읽습니다.", f_base),
     ("• 출력_서울급여 / 출력_구리근무자 / 출력_요약 / 출력_인턴현황: 대상 수만큼 자동으로 펼쳐지는 목록(동적 배열). 셀을 지우거나 아래에 입력하지 마세요(#SPILL! 오류).", f_base),
-    ("• 설정_코드표: 병원·진료과·파견근거·인턴구분·약칭 목록(표)과 설정값(급여 기준월·15일 기준·종료 임박 기준).", f_base),
+    ("• 설정_코드표: 병원·진료과·인턴구분·약칭 목록(표)과 설정값(급여 기준월·15일 기준).", f_base),
     ("", f_base),
     ("[붙여넣는 방법]", f_bold),
     ("• 기본자료: A2부터 (머리글 순서: 현재근무 여부·사번·이름·수련과목·연차·근무지·수련개시일·전공의등록번호·의사면허번호·성별·생년월일·비고). 날짜는 20260301 형식도 됩니다.", f_base),
     ("• 인턴근무계획: B3부터 자료 행(순번·이름·사번·월 6칸·비고). 학기가 바뀌면 2행의 월 머리글(9월~2월 등)도 바꿔 적으세요. 비고 2026.03 = 2026-03-01 입사.", f_base),
-    ("• 파견수련계획: 원본 양식의 4행부터 자료 행을 A4에 (연번~비고, 추가 메모는 O열). 날짜는 날짜 또는 'YYYY.MM.DD' 글자 모두 됩니다.", f_base),
+    ("• 구리 근무자명단: 구리병원 파일의 시트를 A1에 양식 그대로(1~2행 제목, 3행 머리글, 4행부터 자료). 날짜는 'YYYY.MM.DD' 글자도 됩니다.", f_base),
     ("• 전공의명단: 사번·입사장소·비고만 입력. 나머지는 자동.", f_base),
     ("• 예시 데이터(ㅇㅇ)는 모두 지우고 실제 자료를 넣으세요. 표의 행을 지울 때는 행 전체 삭제(표 행 삭제)를 쓰세요.", f_base),
     ("", f_base),
@@ -775,10 +670,10 @@ lines = [
     ("", f_base),
     ("[급여지급병원(기준월) 규칙]", f_bold),
     ("• 서울병원·구리병원 사이: 소속과 무관하게 급여 기준월에 15일 이상 근무한 병원이 그 달 전체를 지급(예: 구리 10일·서울 20일 → 서울 지급).", f_base),
-    ("• 근무일: 구리 근무자명단에 있으면 그 날짜가 구리 근무일, 나머지 날은 모두 서울. 없으면 파견수련계획의 파견 기간은 파견병원, 나머지는 그 달 근무병원(소속 또는 인턴 근무계획 병원).", f_base),
+    ("• 근무일: 구리 근무자명단에 있으면 그 날짜가 구리 근무일, 그 달의 나머지 날은 모두 서울 근무일입니다.", f_base),
     ("• 양쪽 모두 15일 이상이거나 모두 미만이면 ⚠ 판정 불가로 표시합니다.", f_base),
-    ("• 다기관 기간(파견근거=다기관 또는 비고에 '다기관')이 걸리면 소속병원 지급. 서울·구리 외 병원이 섞이면 통합수련=파견병원, 모자=소속병원(가정).", f_base),
-    ("• 파견이 없는 달은 그 달 근무병원이 지급합니다.", f_base),
+    ("• 구리 근무자명단에 없는 사람은 그 달 근무병원(인턴은 인턴근무계획의 병원, 그 외는 소속병원)이 지급합니다.", f_base),
+    ("• 소속병원 = 입사장소 → (비어 있으면) 구리 근무자명단 비고 '구리독자'면 구리병원 → 기본자료 근무지 순서로 정합니다.", f_base),
     ("", f_base),
     ("[참고]", f_bold),
     ("• Microsoft 365(또는 Excel 2021 이상)에서만 정상 동작합니다. 구버전에서는 출력 시트가 오류로 보입니다.", f_base),
@@ -790,7 +685,7 @@ gd.column_dimensions["A"].width = 175
 gd.sheet_view.showGridLines = False
 
 # ================================================================ 시트 순서·탭 색, 저장
-ORDER = ["사용안내", "입력_기본자료", "입력_인턴근무계획", "입력_파견수련계획", "입력_구리근무자명단", "입력_전공의명단",
+ORDER = ["사용안내", "입력_기본자료", "입력_인턴근무계획", "입력_구리근무자명단", "입력_전공의명단",
          "출력_서울급여", "출력_구리근무자", "출력_요약", "출력_인턴현황", "설정_코드표"]
 wb._sheets = [wb[n] for n in ORDER]
 wb.active = 0
