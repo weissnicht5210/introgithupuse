@@ -1,6 +1,7 @@
 """전공의 시간외 근무 → 연속 근무 묶기 + 서울급여 해당 판정 (Excel 2019 이상 호환 — Microsoft 365에서도 동작)
 
-입력: 시간외 근무 상세내역(전월 말일 기록 포함 가능), 시간외 근무(월 합계), 기관명단(전공의 파견 모니터링의 출력_기관명단, 전월·당월·익월)
+입력: 시간외 근무 상세내역(전월 말일 기록 포함 가능), 시간외 근무(월 합계), 기관명단(전공의 파견 모니터링의 출력_기관명단, 전월·당월·익월),
+      월별근무지(사람·월별 근무병원 직접 입력 — 기관명단보다 우선)
 출력: 출력_연속근무, 출력_월경계당직(월을 넘는 당직의 반영 급여월·기관), 출력_서울급여판정(사람별 서울 반영 시간), 출력_타병원발송
 입력은 엑셀 표(행 수 제한 없음), 출력은 정해진 행 수만큼 미리 수식을 넣은 목록(INDEX/MATCH, 순번 보조 열).
 DATA=<pickle> → 실제 자료로 채우기(저장소에 넣지 않음)
@@ -12,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from xlsx2019 import (CL, FONT, add_name, border, center, f_base, f_bold, f_input, f_note, f_title, fill_aux, fill_key,
+from xlsx2019 import (CL, FONT, add_name, border, center, dv, f_base, f_bold, f_input, f_note, f_title, fill_aux, fill_key,
                       head_cell, make_table, q, save)
 
 OUT = os.environ.get("OUT", "시간외근무_서울급여_판정.xlsx")
@@ -85,6 +86,11 @@ st["D5"].value, st["D5"].font = "구리와 오가면 '익월초 급여 반영'�
 make_table(st, "익월초기관표", 6, 4, [("기관", 14, "in", None, None)], [{"기관": h} for h in ["인천병원", "오산병원", "창원병원", "제주병원"]], style="TableStyleLight1")
 st.column_dimensions["C"].width = 3
 add_name(wb, "익월초기관목록", "익월초기관표[기관]")
+st["F5"].value, st["F5"].font = "병원 목록 (입력_월별근무지 드롭다운)", f_bold
+make_table(st, "병원표", 6, 6, [("병원", 14, "in", None, None)],
+           [{"병원": h} for h in ["서울병원", "인천병원", "구리병원", "창원병원", "제주병원", "오산병원"]], style="TableStyleLight1")
+st.column_dimensions["E"].width = 3
+add_name(wb, "병원목록", "병원표[병원]")
 
 # ================================================================ 입력_시간외상세
 ds = wb.create_sheet("입력_시간외상세")
@@ -151,13 +157,21 @@ d_cols += [
     ("기록월", 8, "calc", '=IF(ISNUMBER([@시작]),TEXT([@시작],"yyyy-mm"),"")', None),
     ("종료월", 8, "calc", f'=IF(ISNUMBER([@종료]),TEXT([@종료]-{SEC},"yyyy-mm"),"")', None),
     ("월 넘김", 7, "calc", '=IF(AND([@기록월]<>"",[@종료월]<>"",[@기록월]<>[@종료월]),"월 넘김","")', None),
-    ("기관명단", 8, "calc", '=IF([@사번키]="","",IF(COUNTIF(기관표[사번키],[@사번키])=0,"없음","있음"))', None),
-    ("시작월 기관", 10, "calc", '=IF([@기록월]="","",IFERROR(INDEX(기관표[급여지급병원(기준월)],MATCH([@사번키]&"|"&[@기록월],기관표[키],0))&"",""))', None),
+    ("기관명단", 8, "calc",
+     '=IF([@사번키]="","",IF(COUNTIF(기관표[사번키],[@사번키])>0,"있음",IF(COUNTIF(월별근무지표[사번키],[@사번키])>0,"직접 입력만","없음")))', None),
+    ("시작월 직접행", 7, "calc", '=IF([@기록월]="","",IFERROR(MATCH([@사번키]&"|"&[@기록월],월별근무지표[키],0),""))', "0"),
+    ("종료월 직접행", 7, "calc", '=IF([@종료월]="","",IFERROR(MATCH([@사번키]&"|"&[@종료월],월별근무지표[키],0),""))', "0"),
+    ("시작월 기관", 10, "calc",
+     '=IF([@기록월]="","",IF([@시작월 직접행]<>"",INDEX(월별근무지표[적용 급여병원],[@시작월 직접행])&"",'
+     'IFERROR(INDEX(기관표[급여지급병원(기준월)],MATCH([@사번키]&"|"&[@기록월],기관표[키],0))&"","")))', None),
     ("종료월 기관", 10, "calc",
-     '=IF([@월 넘김]="",[@시작월 기관],IFERROR(INDEX(기관표[급여지급병원(기준월)],MATCH([@사번키]&"|"&[@종료월],기관표[키],0))&"",""))', None),
+     '=IF([@월 넘김]="",[@시작월 기관],IF([@종료월 직접행]<>"",INDEX(월별근무지표[적용 급여병원],[@종료월 직접행])&"",'
+     'IFERROR(INDEX(기관표[급여지급병원(기준월)],MATCH([@사번키]&"|"&[@종료월],기관표[키],0))&"","")))', None),
+    ("기관 출처", 9, "calc",
+     '=IF([@기록월]="","",IF(OR([@시작월 직접행]<>"",AND([@월 넘김]<>"",[@종료월 직접행]<>"")),"직접 입력","기관명단"))', None),
     ("월경계 판정", 24, "calc",
      '=IF([@월 넘김]="","",IF([@기관명단]="없음","기관명단에 없음(다른 병원으로 발송)",'
-     'IF(OR([@시작월 기관]="",[@종료월 기관]=""),"기관 정보 없음(해당 월 기관명단 필요)",'
+     'IF(OR([@시작월 기관]="",[@종료월 기관]=""),"기관 정보 없음(해당 월 기관명단·직접 입력 필요)",'
      'IF(OR(LEFT([@시작월 기관],1)="⚠",LEFT([@종료월 기관],1)="⚠"),"기관 판정 불가(15일 판정불가)",'
      'IF([@시작월 기관]=[@종료월 기관],"같은 기관",'
      'IF(AND(OR([@시작월 기관]="서울병원",[@시작월 기관]="구리병원"),OR([@종료월 기관]="서울병원",[@종료월 기관]="구리병원")),"서울↔구리: 15일 이상 근무 기관",'
@@ -216,7 +230,6 @@ l_rows = (DATA or {}).get("org_rows") or [dict(zip(l_in, r)) for r in [
     ("2026-08", "2222222", "김ㅇㅇ", "ㅇㅇ과", "레지던트2", "서울병원", "서울병원", "서울병원", "예시"),
     ("2026-09", "2222222", "김ㅇㅇ", "ㅇㅇ과", "레지던트2", "서울병원", "서울병원", "서울병원", "예시"),
     ("2026-10", "2222222", "김ㅇㅇ", "ㅇㅇ과", "레지던트2", "서울병원", "서울병원", "구리병원", "예시"),
-    ("2026-08", "3333333", "이ㅇㅇ", "인턴", "인턴", "서울병원", "제주병원", "제주병원", "예시"),
     ("2026-09", "3333333", "이ㅇㅇ", "인턴", "인턴", "서울병원", "구리병원", "구리병원", "예시"),
     ("2026-10", "3333333", "이ㅇㅇ", "인턴", "인턴", "서울병원", "구리병원", "구리병원", "예시"),
     ("2026-08", "4444444", "박ㅇㅇ", "인턴", "인턴", "구리병원", "구리병원", "구리병원", "예시"),
@@ -231,6 +244,36 @@ l_cols += [
 ]
 make_table(sl, "기관표", 1, 1, l_cols, l_rows)
 sl.freeze_panes = "C2"
+
+# ================================================================ 입력_월별근무지 (근무지 직접 입력 — 기관명단보다 우선)
+dw = wb.create_sheet("입력_월별근무지")
+dw["A1"].value, dw["A1"].font = "월별 근무지 직접 입력 (입력_기관명단보다 우선)", f_title
+dw["A2"].value, dw["A2"].font = ("※ 그 달 기관을 직접 정할 사람만 한 줄씩: 월(예: 2026-10)·사번·근무병원. 급여지급병원이 근무병원과 다를 때만 급여지급병원도 입력. "
+                                 "판정에는 '적용 급여병원'이 쓰입니다. 모니터링 파일(365판) 입력_월별근무지와 열 순서가 같아 A~E열을 그대로 복사해 와도 됩니다. "
+                                 "같은 사번·월이 두 줄이면 위쪽 줄이 적용됩니다."), f_note
+dw_rows = DATA.get("direct_rows", []) if DATA else [
+    {"월": _d(2026, 8, 1), "사번": "3333333", "근무병원": "제주병원", "비고": "예시: 8월 기관명단 대신 직접 입력"},
+]
+dw_cols = [("월", 9, "in", None, "yyyy-mm"), ("사번", 11, "in", None, "@"), ("근무병원", 11, "in", None, None),
+           ("급여지급병원", 12, "in", None, None), ("비고", 28, "in", None, None),
+           ("월키", 9, "calc",
+            '=IF([@월]&""="","",IFERROR(IF(ISNUMBER([@월]),IF([@월]<10000,TEXT(DATE(INT([@월]),ROUND(MOD([@월],1)*100,0),1),"yyyy-mm"),'
+            'TEXT([@월],"yyyy-mm")),TEXT(DATEVALUE(SUBSTITUTE(SUBSTITUTE(LEFT(TRIM([@월]),7),".","-"),"/","-")&"-01"),"yyyy-mm")),"⚠형식 오류"))', None),
+           ("사번키", 11, "calc", '=IF(TRIM([@사번]&"")="","","S|"&TRIM([@사번]&""))', None),
+           ("키", 16, "calc", '=IF(LEFT([@월키],1)="⚠","",IF(OR([@사번키]="",[@월키]=""),"",[@사번키]&"|"&[@월키]))', None),
+           ("이름(확인)", 9, "calc",
+            '=IF([@사번키]="","",IFERROR(INDEX(기관표[이름],MATCH([@사번키],기관표[사번키],0))&"",'
+            'IFERROR(INDEX(상세표[성명],MATCH([@사번키],상세표[사번키],0))&"","(자료에 없음)")))', None),
+           ("적용 급여병원", 12, "calc", '=IF([@근무병원]="","",IF([@급여지급병원]="",[@근무병원],[@급여지급병원]))', None),
+           ("점검", 26, "calc",
+            '=IF(AND(TRIM([@사번]&"")="",[@월]&""=""),"",IF(OR(TRIM([@사번]&"")="",[@월]&""=""),"월·사번 모두 입력",'
+            'IF(LEFT([@월키],1)="⚠","월 형식 확인(예: 2026-10)",IF([@근무병원]="","근무병원 입력",'
+            'IF(COUNTIF(월별근무지표[키],[@키])>1,"같은 사번·월 중복(위쪽 줄 적용)","정상")))))', None)]
+make_table(dw, "월별근무지표", 3, 1, dw_cols, dw_rows)
+dw.freeze_panes = "A4"
+for c in ("C", "D"):
+    dv(dw, f"{c}4:{c}{MAXR}", "=병원목록", "등록되지 않은 병원", "병원 목록에 없습니다. 새 병원이면 '설정' 시트의 병원 목록 표에 먼저 추가하세요.")
+dw.conditional_formatting.add(f"K4:K{MAXR}", FormulaRule(formula=['AND($K4<>"",$K4<>"정상")'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
 
 # ================================================================ 출력 목록 공통
 RED = Font(name=FONT, size=10, bold=True, color="C00000")
@@ -305,19 +348,21 @@ for lc, lt, vc, vf in [("A3", "월 넘김 당직", "B3", '=SUM(상세표[경계�
 ob["K3"].value, ob["K3"].font = f'=IF(B3>{OBN},"⚠ 표시 한도({OBN}건) 초과","")', RED
 ob.conditional_formatting.add("J3", FormulaRule(formula=["J3>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
 ob_heads = [("사번", 10), ("성명", 8), ("구분", 12), ("시작", 16), ("종료", 16), ("시간외 시간", 8),
-            ("시작월 기관", 11), ("종료월 기관", 11), ("판정", 26), ("반영 급여월", 9), ("반영 기관", 26)]
+            ("시작월 기관", 11), ("종료월 기관", 11), ("판정", 26), ("반영 급여월", 9), ("반영 기관", 26), ("기관 출처", 9)]
 for i, (h, w) in enumerate(ob_heads, 1):
     head_cell(ob.cell(row=5, column=i), h)
     ob.column_dimensions[CL(i)].width = w
 ob.row_dimensions[5].height = 30
 ob_cols = [D("사번") + '&""', D("성명") + '&""', f'IF({D("종료월")}=대상월키,"전월→이번 달","이번 달→익월")',
            fmtdt(D("시작")), fmtdt(D("종료")), D("기록 시간외"), D("시작월 기관") + '&""', D("종료월 기관") + '&""',
-           D("월경계 판정") + '&""', D("반영월") + '&""', D("반영 기관") + '&""']
-aux_head(ob, "L5")
-fill_list(ob, 6, OBN, 1, "L", "상세표[경계순번]", ob_cols, "월을 넘는 당직 없음", "SUM(상세표[경계표시])=0")
+           D("월경계 판정") + '&""', D("반영월") + '&""', D("반영 기관") + '&""',
+           D("기관 출처") + '&""']
+aux_head(ob, "M5")
+fill_list(ob, 6, OBN, 1, "M", "상세표[경계순번]", ob_cols, "월을 넘는 당직 없음", "SUM(상세표[경계표시])=0")
 OBE = 5 + OBN
-ob.conditional_formatting.add(f"A6:K{OBE}", FormulaRule(formula=['$I6="익월초 급여 반영"'], fill=PatternFill("solid", bgColor="FFF2CC")))
-ob.conditional_formatting.add(f"A6:K{OBE}", FormulaRule(formula=['OR(LEFT($I6,2)="기관",$I6="규정 확인 필요")'], fill=PatternFill("solid", bgColor="FFC7CE")))
+ob.conditional_formatting.add(f"A6:L{OBE}", FormulaRule(formula=['$I6="익월초 급여 반영"'], fill=PatternFill("solid", bgColor="FFF2CC")))
+ob.conditional_formatting.add(f"A6:L{OBE}", FormulaRule(formula=['OR(LEFT($I6,2)="기관",$I6="규정 확인 필요")'], fill=PatternFill("solid", bgColor="FFC7CE")))
+ob.conditional_formatting.add(f"L6:L{OBE}", FormulaRule(formula=['$L6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
 ob.freeze_panes = "C6"
 
 # ================================================================ 출력_서울급여판정
@@ -336,13 +381,16 @@ for lc, lt, vc, vf in [("A3", "대상월", "B3", "=대상월키"),
                        ("K3", "대상월 기관명단 없음", "L3", f'=COUNTIF($L$6:$L${OPE},"대상월 기관명단*")')]:
     op[lc].value, op[lc].font, op[lc].alignment = lt, f_bold, Alignment(horizontal="right")
     op[vc].value, op[vc].font, op[vc].border, op[vc].alignment = vf, f_bold, border, center
-op["M3"].value, op["M3"].font = f'=IF(D3>{OPN},"⚠ 표시 한도({OPN}명) 초과","")', RED
+op["M3"].value, op["M3"].font = "직접 입력 적용", f_bold
+op["M3"].alignment = Alignment(horizontal="right")
+op["N3"].value, op["N3"].font, op["N3"].border, op["N3"].alignment = f'=COUNTIF($R$6:$R${OPE},"직접 입력")', f_bold, border, center
+op["O3"].value, op["O3"].font = f'=IF(D3>{OPN},"⚠ 표시 한도({OPN}명) 초과","")', RED
 for c in ("H3", "L3"):
     op.conditional_formatting.add(c, FormulaRule(formula=[f"{c}>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
 op.conditional_formatting.add("J3", FormulaRule(formula=["J3>0"], fill=PatternFill("solid", bgColor="F8CBAD")))
 op_heads = [("사번", 10), ("성명", 8), ("부서", 10), ("직위", 16), ("시스템 합계", 8), ("상세 합계(대상월 기록)", 9),
             ("상세 대조", 13), ("이월(−) 익월초", 8), ("전입(+) 전월 말일", 8), ("대상월 반영 시간", 9),
-            ("대상월 급여지급병원", 11), ("서울급여", 20)] + [(f"서울 {b}", 8) for b in BANDS] + [("서울 반영 합계", 9)]
+            ("대상월 급여지급병원", 11), ("서울급여", 20)] + [(f"서울 {b}", 8) for b in BANDS] + [("서울 반영 합계", 9), ("기관 출처", 9)]
 for i, (h, w) in enumerate(op_heads, 1):
     head_cell(op.cell(row=5, column=i), h)
     op.column_dimensions[CL(i)].width = w
@@ -352,39 +400,43 @@ sm = lambda col, *crit: f'SUMIFS(상세표[{col}],상세표[사번키],{U}' + ""
 C_REC_M, C_REF_M = "상세표[기록월],대상월키", "상세표[반영월],대상월키"
 C_REC_NOT, C_REF_NOT = '상세표[기록월],"<>"&대상월키', '상세표[반영월],"<>"&대상월키'
 C_SEOUL = '상세표[반영 기관],"서울병원"'
-HAS_ORG = f"COUNTIF(기관표[사번키],{U})>0"
+HAS_ORG = f"COUNTIF(기관표[사번키],{U})+COUNTIF(월별근무지표[사번키],{U})>0"
+DROW = f'MATCH({U}&"|"&대상월키,월별근무지표[키],0)'
 r_ = "{r}"
 op_cols = [f'INDEX(합계표[{c}],{{j}})&""' for c in ("사번", "성명", "부서", "직위(통합)")] + [
     f"SUMIFS(합계표[시스템 합계],합계표[사번키],{U})",
     sm("기록 시간외", C_REC_M),
     'IF(ABS($E{r}-$F{r})<0.01,"일치","불일치(차이 "&TEXT($F{r}-$E{r},"0.00")&")")',
     sm("기록 시간외", C_REC_M, C_REF_NOT), sm("기록 시간외", C_REC_NOT, C_REF_M), sm("기록 시간외", C_REF_M),
-    f'IF({HAS_ORG},IFERROR(INDEX(기관표[급여지급병원(기준월)],MATCH({U}&"|"&대상월키,기관표[키],0))&"","—"),"—")',
+    f'IFERROR(INDEX(월별근무지표[적용 급여병원],{DROW})&"",IF({HAS_ORG},IFERROR(INDEX(기관표[급여지급병원(기준월)],'
+    f'MATCH({U}&"|"&대상월키,기관표[키],0))&"","—"),"—"))',
     f'IF(NOT({HAS_ORG}),"{NOORG}",IF($K{{r}}="—","{NOMON}",IF($K{{r}}="서울병원","해당","비해당")))',
-] + [sm(b, C_REF_M, C_SEOUL) for b in BANDS] + ["SUM($M{r}:$P{r})"]
-aux_head(op, "R5", "(합계 행)")
+] + [sm(b, C_REF_M, C_SEOUL) for b in BANDS] + ["SUM($M{r}:$P{r})",
+       f'IF(ISNUMBER({DROW}),"직접 입력",IF($K{{r}}="—","—","기관명단"))']
+aux_head(op, "S5", "(합계 행)")
 for k in range(1, OPN + 1):
     r = 5 + k
-    j = f"$R{r}"
-    op[f"R{r}"].value, op[f"R{r}"].font = f'=IFERROR(MATCH({k},합계표[판정순번],0),"")', f_note
+    j = f"$S{r}"
+    op[f"S{r}"].value, op[f"S{r}"].font = f'=IFERROR(MATCH({k},합계표[판정순번],0),"")', f_note
     for i, e in enumerate(op_cols, 1):
         op.cell(row=r, column=i).value = f'=IF({j}="","",{e.replace("{j}", j).replace("{r}", str(r))})'
-op["A6"].value = f'=IF($R6="",IF(COUNT(합계표[판정순번])=0,"시간외 합계 없음",""),INDEX(합계표[사번],$R6)&"")'
-op.conditional_formatting.add(f"A6:Q{OPE}", FormulaRule(formula=['$L6="비해당"'], fill=PatternFill("solid", bgColor="EDEDED"), font=Font(name=FONT, color="7F7F7F")))
-op.conditional_formatting.add(f"A6:Q{OPE}", FormulaRule(formula=['LEFT($L6,7)="기관명단에 없"'], fill=PatternFill("solid", bgColor="F8CBAD"), font=Font(name=FONT, bold=True, color="833C0B")))
+op["A6"].value = f'=IF($S6="",IF(COUNT(합계표[판정순번])=0,"시간외 합계 없음",""),INDEX(합계표[사번],$S6)&"")'
+op.conditional_formatting.add(f"A6:R{OPE}", FormulaRule(formula=['$L6="비해당"'], fill=PatternFill("solid", bgColor="EDEDED"), font=Font(name=FONT, color="7F7F7F")))
+op.conditional_formatting.add(f"A6:R{OPE}", FormulaRule(formula=['LEFT($L6,7)="기관명단에 없"'], fill=PatternFill("solid", bgColor="F8CBAD"), font=Font(name=FONT, bold=True, color="833C0B")))
 op.conditional_formatting.add(f"L6:L{OPE}", FormulaRule(formula=['LEFT($L6,6)="대상월 기관"'], fill=PatternFill("solid", bgColor="FFC7CE")))
 op.conditional_formatting.add(f"G6:G{OPE}", FormulaRule(formula=['LEFT($G6,3)="불일치"'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
 op.conditional_formatting.add(f"H6:I{OPE}", FormulaRule(formula=['AND(ISNUMBER(H6),H6<>0)'], fill=PatternFill("solid", bgColor="FFF2CC"), font=Font(name=FONT, bold=True)))
 op.conditional_formatting.add(f"L6:L{OPE}", FormulaRule(formula=['$L6="해당"'], fill=PatternFill("solid", bgColor="C6E0B4"), font=Font(name=FONT, bold=True)))
+op.conditional_formatting.add(f"R6:R{OPE}", FormulaRule(formula=['$R6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
 op.freeze_panes = "C6"
-op.column_dimensions["R"].width = 6
-op.column_dimensions["S"].width = 3
-op["T4"].value, op["T4"].font = "대상월 반영 기록이 있는데 합계표에 없는 사번 (전월 말일 당직만 있는 사람 등)", f_bold
+op.column_dimensions["S"].width = 6
+op.column_dimensions["T"].width = 3
+op["U4"].value, op["U4"].font = "대상월 반영 기록이 있는데 합계표에 없는 사번 (전월 말일 당직만 있는 사람 등)", f_bold
 for i, (h, w) in enumerate([("사번", 10), ("성명", 8), ("대상월 반영 시간", 10)]):
-    head_cell(op.cell(row=5, column=20 + i), h)
-    op.column_dimensions[CL(20 + i)].width = w
-aux_head(op, "W5", "(상세 행)")
-fill_list(op, 6, OSN, 20, "W", "상세표[합계없음순번]",
+    head_cell(op.cell(row=5, column=21 + i), h)
+    op.column_dimensions[CL(21 + i)].width = w
+aux_head(op, "X5", "(상세 행)")
+fill_list(op, 6, OSN, 21, "X", "상세표[합계없음순번]",
           [D("사번") + '&""', D("성명") + '&""', f'SUMIFS(상세표[기록 시간외],상세표[사번키],{D("사번키")},상세표[반영월],대상월키)'],
           "없음", "SUM(상세표[합계없음첫행])=0")
 
@@ -432,7 +484,14 @@ lines = [
     ("1) 설정 B4에 대상월(급여 처리할 달) 입력 — 기본값은 지난달", f_base),
     ("2) 입력_시간외상세: 대상월 상세내역 + 전월 상세내역 중 말일 기록(또는 전월 전체)을 A5부터 붙여넣기. 익월 상세가 이미 있으면 함께 넣어도 됩니다.", f_base),
     ("3) 입력_시간외합계: 대상월 '월별 전공의 시간외 근무'의 5행부터 끝까지를 A5에 붙여넣기", f_base),
-    ("4) 입력_기관명단: 전공의 파견 모니터링 파일의 출력_기관명단을 값으로 복사해 붙여넣기 — 전월·대상월·익월 3개월치 (모니터링 파일 설정의 급여 기준월을 바꿔 가며 복사)", f_base),
+    ("4) 입력_기관명단: 전공의 파견 모니터링 파일의 출력_기관명단을 값으로 복사해 붙여넣기 — 전월·대상월·익월 3개월치 (365판은 한 번에 3개월, 2019판은 급여 기준월을 바꿔 가며 복사)", f_base),
+    ("5) 입력_월별근무지(필요할 때만): 기관명단에 없거나 다르게 처리할 사람의 그 달 근무병원(·급여지급병원)을 직접 입력 — 기관명단보다 우선합니다.", f_base),
+    ("", f_base),
+    ("[월별 근무지 직접 입력]", f_bold),
+    ("• 월(예: 2026-10)·사번·근무병원을 넣고, 급여지급병원이 근무병원과 다를 때만 급여지급병원도 넣습니다. 판정에는 '적용 급여병원'(급여지급병원, 비면 근무병원)이 쓰입니다.", f_base),
+    ("• 적용되는 곳: 월을 넘는 당직의 시작월·종료월 기관, 대상월 급여지급병원(서울급여 해당 여부). 출력_월경계당직·출력_서울급여판정의 '기관 출처' 열에 '직접 입력'으로 표시됩니다.", f_base),
+    ("• 기관명단에 사번이 없어도 직접 입력이 있으면 '기관명단에 없음(다른 병원으로 발송)'으로 보내지 않습니다.", f_base),
+    ("• 모니터링 파일(365판)의 입력_월별근무지와 열 순서(월·사번·근무병원·급여지급병원·비고)가 같아 그대로 복사해 붙여넣을 수 있습니다.", f_base),
     ("", f_base),
     ("[출력 시트]", f_bold),
     ("• 출력_연속근무: 대상월에 걸친 이어진 근무를 한 줄로(전월 말일에 시작한 당직 포함), 사번·시작 순, 빈 줄 없음. 주말·휴일, 36시간 초과, 월 넘김 표시", f_base),
@@ -441,10 +500,10 @@ lines = [
     ("• 출력_타병원발송: 기관명단에 사번이 없는 시간외 근무자(다른 병원으로 발송할 대상)와 그 사람들의 대상월 상세 기록", f_base),
     ("", f_base),
     ("[월을 넘는 당직 규칙] — 기록(당직 1건) 단위로 판단", f_bold),
-    ("• 시작한 달과 끝난 달의 기관(입력_기관명단의 급여지급병원)이 같으면: 시작한 달 급여에 반영", f_base),
+    ("• 시작한 달과 끝난 달의 기관(입력_월별근무지 직접 입력 → 입력_기관명단의 급여지급병원)이 같으면: 시작한 달 급여에 반영", f_base),
     ("• 서울↔구리: 시작한 달의 15일 이상 근무 기관(그 달 급여지급병원)에 반영", f_base),
     ("• 구리↔인천·오산·창원·제주(설정의 '익월초 기관' 표): '익월초 급여 반영' — 끝난 달(익월) 급여로 넘기고 반영 기관은 '확인 필요'로 표시", f_base),
-    ("• 그 밖의 조합(예: 서울↔인천)은 '규정 확인 필요', 기관명단에 해당 월이 없으면 '기관 정보 없음', 사번이 기관명단에 아예 없으면 '기관명단에 없음(다른 병원으로 발송)'", f_base),
+    ("• 그 밖의 조합(예: 서울↔인천)은 '규정 확인 필요', 기관명단·직접 입력에 해당 월이 없으면 '기관 정보 없음', 사번이 기관명단·직접 입력에 아예 없으면 '기관명단에 없음(다른 병원으로 발송)'", f_base),
     ("• 예: 08-31 20:00~09-01 08:00 제주→구리 → 9월(익월초) 급여 반영 / 09-30 20:00~10-01 08:00 서울→구리 → 9월 15일 이상 근무 기관(9월 급여지급병원)", f_base),
     ("", f_base),
     ("[연속 근무 판단]", f_bold),
@@ -465,7 +524,7 @@ for i, (tx, fo) in enumerate(lines, 1):
 gd.column_dimensions["A"].width = 170
 gd.sheet_view.showGridLines = False
 
-ORDER = ["사용안내", "입력_시간외상세", "입력_시간외합계", "입력_기관명단", "출력_연속근무", "출력_월경계당직", "출력_서울급여판정", "출력_타병원발송", "설정"]
+ORDER = ["사용안내", "입력_시간외상세", "입력_시간외합계", "입력_기관명단", "입력_월별근무지", "출력_연속근무", "출력_월경계당직", "출력_서울급여판정", "출력_타병원발송", "설정"]
 wb._sheets = [wb[n] for n in ORDER]
 wb.active = 0
 for sh in wb.worksheets:
