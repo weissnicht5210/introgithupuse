@@ -11,6 +11,8 @@
       예) 기준일 2026-10-09 -> 2026-07-01 ~ 2026-09-30 입사자 (이수기한 = 입사일 + 3개월)
   - 이수: '필수과정1' 과 '필수과정2' 모두 수료일이 있어야 함
       시작일 = 두 과정 중 빠른 날짜 / 종료일, 수료일 = 두 과정 중 늦은 날짜
+  - 과정명의 연도(예: 2026)는 무시하고 매칭
+  - 한 과정만 배정된 인원(예: 필수과정2만)은 배정된 과정만으로 이수/시작일/종료일/수료일 판단
 """
 import argparse
 import re
@@ -18,7 +20,7 @@ from datetime import date, datetime
 
 import pandas as pd
 
-COURSES = ["2026 한양대병원 필수과정1", "2026 한양대병원 필수과정2"]
+COURSES = ["한양대병원 필수과정1", "한양대병원 필수과정2"]  # 연도(2026 등)는 무시하고 매칭
 TARGET_STATUS = ["재직", "모자발령"]
 EXCLUDE_STATUS = ["퇴직"]
 
@@ -61,6 +63,11 @@ def deadline(d):
     return f.replace(day=min(d.day, last))
 
 
+def course_key(name):
+    """과정명에서 연도·공백을 제거해 비교용 키로 변환."""
+    return re.sub(r"^\s*\d{4}\s*", "", str(name)).strip()
+
+
 def norm_id(v):
     return re.sub(r"\D", "", str(v)) if v is not None else ""
 
@@ -91,6 +98,7 @@ def main():
     emp["이수기한"] = emp["입사일"].map(deadline)
 
     # 학습현황: 사번(로그인아이디의 숫자) 우선, 없으면 연락처로 매칭
+    lrn["과정키"] = lrn["과정명"].map(course_key)
     lrn["사번"] = lrn["로그인아이디"].map(norm_id)
     lrn["폰"] = lrn["연락처"].map(norm_phone)
     lrn["시작"] = lrn["시작일"].map(to_date)
@@ -121,18 +129,24 @@ def main():
         rec["대상입사기간"] = period
 
         m = find_rows(r)
-        done, starts, ends, certs = [], [], [], []
+        starts, ends, certs, assigned, done = [], [], [], [], []
+        status = {}
         for c in COURSES:
-            cm = m[m["과정명"].astype(str).str.strip() == c]
-            has = (not cm.empty) and cm["수료"].notna().all()
-            done.append(has)
-            if not cm.empty:
-                starts += [d for d in cm["시작"] if d]
-                ends += [d for d in cm["종료"] if d]
-                certs += [d for d in cm["수료"] if d]
-        rec["필수과정1"] = "수료" if done[0] else ("수강중" if (m["과정명"] == COURSES[0]).any() else "미신청")
-        rec["필수과정2"] = "수료" if done[1] else ("수강중" if (m["과정명"] == COURSES[1]).any() else "미신청")
-        full = all(done)
+            cm = m[m["과정키"] == c]
+            if cm.empty:
+                status[c] = "해당없음" if not m.empty else "미신청"
+                continue
+            assigned.append(c)
+            ok = cm["수료"].notna().all()
+            done.append(ok)
+            status[c] = "수료" if ok else "수강중"
+            starts += [d for d in cm["시작"] if d]
+            ends += [d for d in cm["종료"] if d]
+            certs += [d for d in cm["수료"] if d]
+        rec["필수과정1"] = status[COURSES[0]]
+        rec["필수과정2"] = status[COURSES[1]]
+        # 배정된 과정이 있고 그 과정을 모두 수료해야 이수 (한 과정만 배정이면 그 과정만 판단)
+        full = bool(assigned) and all(done)
         rec["이수여부"] = "이수" if full else "미이수"
         rec["시작일"] = min(starts) if full and starts else None
         rec["종료일"] = max(ends) if full and ends else None
@@ -159,6 +173,10 @@ def main():
         if not review.empty:
             review.to_excel(w, sheet_name="확인필요", index=False)
         for ws in w.book.worksheets:
+            for row in ws.iter_rows():
+                for c in row:
+                    if hasattr(c.value, "year"):
+                        c.number_format = "yyyy-mm-dd"
             for col in ws.columns:
                 ws.column_dimensions[col[0].column_letter].width = max(
                     10, min(30, max(len(str(c.value or "")) for c in col) + 2))
