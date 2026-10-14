@@ -220,7 +220,7 @@ s_rows = (DATA or {}).get("summary_rows") or [dict(zip(s_in, r)) for r in [
     ("수련교육부", 4444444, "박ㅇㅇ", "인턴", "인턴", "1.00", "1.00", "2.00", "8.00"),
     ("△△과", 5555555, "정ㅇㅇ", "레지던트3", "레지던트3", "1.00", "11.00", "4.00", "8.00"),
 ]]
-s_cols = [(h, w, "in", None, None) for h, w in zip(s_in, [10, 10, 8, 10, 10, 8, 8, 8, 8])]
+s_cols = [(h, w, "in", None, "0.00" if h in BANDS else None) for h, w in zip(s_in, [10, 10, 8, 10, 10, 8, 8, 8, 8])]
 s_cols.append(("사번키", 10, "calc", '=IF(TRIM([@사번]&"")="","","S|"&TRIM([@사번]&""))', None))
 s_cols.append(("시스템 합계", 9, "calc", "=" + "+".join(f'IFERROR(VALUE(TRIM([@{b}]&"")),0)' for b in BANDS), "0.00"))
 # 같은 사번이 직위만 달리해 여러 줄이면 한 사람으로: 첫 직위와 마지막 직위를 한 칸에 표시(배열 함수 없이)
@@ -303,6 +303,13 @@ def fill_list(ws, r0, n, c0, hcol, rank_ref, exprs, empty_msg=None, empty_cond=N
         ws.cell(row=r0, column=c0).value = f'=IF({j}="",IF({empty_cond},"{empty_msg}",""),{exprs[0].format(j=j)})'
 
 
+def hours_fmt(ws, cols, r0, r1):
+    """시간 열은 소수 둘째 자리까지 표시."""
+    for c in cols:
+        for r in range(r0, r1 + 1):
+            ws[f"{c}{r}"].number_format = "0.00"
+
+
 def aux_head(ws, cell, text="(행)"):
     head_cell(ws[cell], text, fill_aux)
 
@@ -342,6 +349,7 @@ OCE = 5 + OCN
 oc.conditional_formatting.add(f"A6:{CL(len(oc_cols))}{OCE}", FormulaRule(formula=['AND(ISNUMBER($I6),$I6>36)'], fill=PatternFill("solid", bgColor="FFC7CE")))
 oc.conditional_formatting.add(f"A6:{CL(len(oc_cols))}{OCE}", FormulaRule(formula=['$P6="포함"'], fill=PatternFill("solid", bgColor="DDEBF7")))
 oc.conditional_formatting.add(f"A6:{CL(len(oc_cols))}{OCE}", FormulaRule(formula=['$O6="포함"'], fill=PatternFill("solid", bgColor="FCE4D6")))
+hours_fmt(oc, ["I", "K", "L", "M", "N"], 6, OCE)
 oc.freeze_panes = "D6"
 
 # ================================================================ 출력_월경계당직
@@ -375,6 +383,7 @@ OBE = 5 + OBN
 ob.conditional_formatting.add(f"A6:L{OBE}", FormulaRule(formula=['$I6="말일 근무: 근무한 익월 기관에 반영"'], fill=PatternFill("solid", bgColor="FFF2CC")))
 ob.conditional_formatting.add(f"A6:L{OBE}", FormulaRule(formula=['OR(LEFT($I6,2)="기관",LEFT($I6,16)="말일 근무: 익월 기관 정보")'], fill=PatternFill("solid", bgColor="FFC7CE")))
 ob.conditional_formatting.add(f"L6:L{OBE}", FormulaRule(formula=['$L6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
+hours_fmt(ob, ["F"], 6, OBE)
 ob.freeze_panes = "C6"
 
 # ================================================================ 출력_서울급여판정
@@ -447,6 +456,8 @@ op.conditional_formatting.add(f"G6:G{OPE}", FormulaRule(formula=['LEFT($G6,3)="�
 op.conditional_formatting.add(f"H6:I{OPE}", FormulaRule(formula=['AND(ISNUMBER(H6),H6<>0)'], fill=PatternFill("solid", bgColor="FFF2CC"), font=Font(name=FONT, bold=True)))
 op.conditional_formatting.add(f"L6:L{OPE}", FormulaRule(formula=['LEFT($L6,2)="해당"'], fill=PatternFill("solid", bgColor="C6E0B4"), font=Font(name=FONT, bold=True)))
 op.conditional_formatting.add(f"V6:V{OPE}", FormulaRule(formula=['$V6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
+hours_fmt(op, ["E", "F", "H", "I", "J", "M", "N", "O", "P", "Q"], 6, OPE)
+hours_fmt(op, ["AA"], 6, 5 + OSN)
 op.freeze_panes = "C6"
 op.column_dimensions["W"].width = 6
 op.column_dimensions["X"].width = 3
@@ -498,6 +509,8 @@ rec_cols = [D("사번") + '&""', D("성명") + '&""', D("직위") + '&""', f'IF(
 RH = CL(10 + len(rec_heads))
 aux_head(ot, f"{RH}5")
 fill_list(ot, 6, OTR, 10, RH, "상세표[발송순번]", rec_cols)
+hours_fmt(ot, ["F", "G"], 6, 5 + OTP)
+hours_fmt(ot, ["P", "Q", "R", "S", "T"], 6, 5 + OTR)
 ot.freeze_panes = "A6"
 
 # ================================================================ 사용안내
