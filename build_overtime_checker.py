@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from xlsx2019 import (CL, FONT, add_name, border, center, dv, f_base, f_bold, f_input, f_note, f_title, fill_aux, fill_key,
+from xlsx2019 import (CI, CL, FONT, add_name, border, center, dv, f_base, f_bold, f_input, f_note, f_title, fill_aux, fill_key,
                       head_cell, make_table, q, save)
 
 OUT = os.environ.get("OUT", "시간외근무_서울급여_판정.xlsx")
@@ -223,13 +223,30 @@ s_rows = (DATA or {}).get("summary_rows") or [dict(zip(s_in, r)) for r in [
 s_cols = [(h, w, "in", None, "0.00" if h in BANDS else None) for h, w in zip(s_in, [10, 10, 8, 10, 10, 8, 8, 8, 8])]
 s_cols.append(("사번키", 10, "calc", '=IF(TRIM([@사번]&"")="","","S|"&TRIM([@사번]&""))', None))
 s_cols.append(("시스템 합계", 9, "calc", "=" + "+".join(f'IFERROR(VALUE(TRIM([@{b}]&"")),0)' for b in BANDS), "0.00"))
-# 같은 사번이 직위만 달리해 여러 줄이면 한 사람으로: 첫 직위와 마지막 직위를 한 칸에 표시(배열 함수 없이)
+# 같은 사번이 직위만 달리해 여러 줄이면 한 사람으로. 승급하는 달에는 두 직급이 공존할 수 있음:
+# 요약 직위는 B 숫자가 작은 쪽(승급한 직급, B4→B3→B2→B1→B0 순으로 우선), 공존 여부는 따로 표시
 s_cols.append(("사번내순서", 7, "calc", '=IF([@사번키]="","",COUNTIF(INDEX(합계표[사번키],1):[@사번키],[@사번키]))', "0"))
 s_cols.append(("순서키", 12, "calc", '=IF([@사번키]="","",[@사번키]&"#"&[@사번내순서])', None))
-_first = 'INDEX(합계표[직위(변환)],MATCH([@사번키]&"#1",합계표[순서키],0))&""'
-_last = 'INDEX(합계표[직위(변환)],MATCH([@사번키]&"#"&COUNTIF(합계표[사번키],[@사번키]),합계표[순서키],0))&""'
-s_cols.append(("직위(통합)", 18, "calc",
-               f'=IF([@사번키]="","",IF({_first}={_last},{_first},{_first}&", "&{_last}))', None))
+s_cols.append(("직위순위", 7, "calc",
+               '=IF([@사번키]="","",IF(UPPER(LEFT(TRIM([@직위]&""),1))="B",IFERROR(VALUE(MID(TRIM([@직위]&""),2,3)),99),99))', "0"))
+s_cols.append(("순위키", 12, "calc", '=IF([@사번키]="","",[@사번키]&"#"&[@직위순위])', None))
+s_cols.append(("직위첫행", 6, "calc",
+               '=IF([@사번키]="",0,IF(COUNTIFS(INDEX(합계표[사번키],1):[@사번키],[@사번키],'
+               'INDEX(합계표[직위],1):[@직위],TRIM([@직위]&""))=1,1,0))', "0"))
+s_cols.append(("직위 종류", 6, "calc", '=IF([@사번키]="","",COUNTIFS(합계표[사번키],[@사번키],합계표[직위첫행],1))', "0"))
+s_cols.append(("요약행", 6, "calc",
+               '=IF([@사번키]="","",MATCH([@사번키]&"#"&MINIFS(합계표[직위순위],합계표[사번키],[@사번키]),합계표[순위키],0))', "0"))
+s_cols.append(("이전직급행", 6, "calc",
+               '=IF([@사번키]="","",MATCH([@사번키]&"#"&MAXIFS(합계표[직위순위],합계표[사번키],[@사번키]),합계표[순위키],0))', "0"))
+_pos = lambda rr: (f'IF(INDEX(합계표[직위(변환)],{rr})&""="",INDEX(합계표[직위],{rr})&"",'
+                   f'INDEX(합계표[직위],{rr})&" "&INDEX(합계표[직위(변환)],{rr}))')
+s_cols.append(("직위(요약)", 14, "calc",
+               '=IF([@사번키]="","",IF(INDEX(합계표[직위(변환)],[@요약행])&""="",INDEX(합계표[직위],[@요약행])&"",'
+               'INDEX(합계표[직위(변환)],[@요약행])&""))', None))
+s_cols.append(("직급 공존", 26, "calc",
+               f'=IF(N([@직위 종류])<2,"",IF([@요약행]<>[@이전직급행],"공존: "&{_pos("[@이전직급행]")}&" → "&{_pos("[@요약행]")},'
+               '"공존: "&INDEX(합계표[직위],MATCH([@사번키]&"#1",합계표[순서키],0))&" · "&'
+               'INDEX(합계표[직위],MATCH([@사번키]&"#"&COUNTIF(합계표[사번키],[@사번키]),합계표[순서키],0))&" (우선순위 판단 불가)"))', None))
 s_cols.append(("판정순번", 7, "calc", '=IF([@사번내순서]=1,COUNTIF(INDEX(합계표[사번내순서],1):[@사번내순서],1),"")', "0"))
 make_table(ss, "합계표", 4, 1, s_cols, s_rows)
 ss.freeze_panes = "D5"
@@ -394,85 +411,108 @@ op["A1"].value, op["A1"].font = "시간외 근무 서울급여 판정 (대상월
 op["A2"].value, op["A2"].font = (f"※ 자동 결과(입력 금지, 최대 {OPN}명). 같은 사번은 직위가 달라도 한 사람으로 합칩니다. 서울급여 = 대상월 급여지급병원이 서울병원(또는 '해당(말일 근무)': 말일 근무를 서울병원에서 해 서울 반영 시간이 있는 사람). "
                                  "기관명단에 사번이 아예 없으면 '기관명단에 없음(다른 병원으로 발송)' — 출력_타병원발송에 따로 모았습니다."), f_note
 OPE = 5 + OPN
+op_heads = [("사번", 10), ("성명", 8), ("부서", 10), ("직위", 12), ("직급 공존", 26), ("시스템 합계", 8), ("상세 합계(대상월 기록)", 9),
+            ("상세 대조", 13), ("이월(−) 다른 달 반영", 8), ("전입(+) 다른 달 기록", 8), ("대상월 반영 시간", 9),
+            ("대상월 급여지급병원", 11), ("서울급여", 20)] + [(f"서울 {b}", 8) for b in BANDS] + [("서울 반영 합계", 9),
+            ("평일 야간 당직(건)", 8), ("휴일 야간 당직(건)", 8), ("서울 평일 야간 당직(건)", 8), ("서울 휴일 야간 당직(건)", 8), ("기관 출처", 9)]
+OC = {h: CL(i) for i, (h, _w) in enumerate(op_heads, 1)}   # 열 이름 → 열 글자
+NIGHT = ["평일 야간 당직(건)", "휴일 야간 당직(건)", "서울 평일 야간 당직(건)", "서울 휴일 야간 당직(건)"]
+OPH = CL(len(op_heads) + 1)        # 보조: 합계 행
+SIDE = len(op_heads) + 3           # 옆 표 시작 열 (한 칸 띄움)
+SIDEH = CL(SIDE + 3)               # 옆 표 보조 열
+col = lambda h: f"${OC[h]}$6:${OC[h]}${OPE}"
 for lc, lt, vc, vf in [("A3", "대상월", "B3", "=대상월키"),
                        ("C3", "시간외 인원(사번 기준)", "D3", '=COUNT(합계표[판정순번])'),
-                       ("E3", "서울급여 해당", "F3", f'=COUNTIF($L$6:$L${OPE},"해당*")'),
-                       ("G3", "상세·합계 불일치", "H3", f'=COUNTIF($G$6:$G${OPE},"불일치*")'),
-                       ("I3", "기관명단에 없음(타 병원 발송)", "J3", f'=COUNTIF($L$6:$L${OPE},"기관명단에 없음*")'),
-                       ("K3", "대상월 기관명단 없음", "L3", f'=COUNTIF($L$6:$L${OPE},"대상월 기관명단*")')]:
+                       ("E3", "서울급여 해당", "F3", f'=COUNTIF({col("서울급여")},"해당*")'),
+                       ("G3", "상세·합계 불일치", "H3", f'=COUNTIF({col("상세 대조")},"불일치*")'),
+                       ("I3", "기관명단에 없음(타 병원 발송)", "J3", f'=COUNTIF({col("서울급여")},"기관명단에 없음*")'),
+                       ("K3", "대상월 기관명단 없음", "L3", f'=COUNTIF({col("서울급여")},"대상월 기관명단*")'),
+                       ("M3", "직접 입력 적용", "N3", f'=COUNTIF({col("기관 출처")},"직접 입력")'),
+                       ("O3", "직급 공존", "P3", f'=COUNTIF({col("직급 공존")},"공존*")'),
+                       ("Q3", "8시간 미만 야간(당직 제외)", "R3", '=COUNTIFS(상세표[야간첫행],1,상세표[야간당직],0,상세표[반영월],대상월키)')]:
     op[lc].value, op[lc].font, op[lc].alignment = lt, f_bold, Alignment(horizontal="right")
     op[vc].value, op[vc].font, op[vc].border, op[vc].alignment = vf, f_bold, border, center
-op["M3"].value, op["M3"].font = "직접 입력 적용", f_bold
-op["M3"].alignment = Alignment(horizontal="right")
-op["N3"].value, op["N3"].font, op["N3"].border, op["N3"].alignment = f'=COUNTIF($V$6:$V${OPE},"직접 입력")', f_bold, border, center
-op["O3"].value, op["O3"].font = f'=IF(D3>{OPN},"⚠ 표시 한도({OPN}명) 초과","")', RED
-op["Q3"].value, op["Q3"].font, op["Q3"].alignment = "8시간 미만 야간(당직 제외)", f_bold, Alignment(horizontal="right")
-op["R3"].value = '=COUNTIFS(상세표[야간첫행],1,상세표[야간당직],0,상세표[반영월],대상월키)'
-op["R3"].font, op["R3"].border, op["R3"].alignment = f_bold, border, center
+op["S3"].value, op["S3"].font = f'=IF(D3>{OPN},"⚠ 표시 한도({OPN}명) 초과","")', RED
 op.conditional_formatting.add("R3", FormulaRule(formula=["R3>0"], fill=PatternFill("solid", bgColor="FFF2CC")))
+op.conditional_formatting.add("P3", FormulaRule(formula=["P3>0"], fill=PatternFill("solid", bgColor="E4DFEC")))
 for c in ("H3", "L3"):
     op.conditional_formatting.add(c, FormulaRule(formula=[f"{c}>0"], fill=PatternFill("solid", bgColor="FFC7CE")))
 op.conditional_formatting.add("J3", FormulaRule(formula=["J3>0"], fill=PatternFill("solid", bgColor="F8CBAD")))
-op_heads = [("사번", 10), ("성명", 8), ("부서", 10), ("직위", 16), ("시스템 합계", 8), ("상세 합계(대상월 기록)", 9),
-            ("상세 대조", 13), ("이월(−) 다른 달 반영", 8), ("전입(+) 다른 달 기록", 8), ("대상월 반영 시간", 9),
-            ("대상월 급여지급병원", 11), ("서울급여", 20)] + [(f"서울 {b}", 8) for b in BANDS] + [("서울 반영 합계", 9), ("평일 야간 당직(건)", 8), ("휴일 야간 당직(건)", 8),
-                                    ("서울 평일 야간 당직(건)", 8), ("서울 휴일 야간 당직(건)", 8), ("기관 출처", 9)]
 for i, (h, w) in enumerate(op_heads, 1):
     head_cell(op.cell(row=5, column=i), h)
     op.column_dimensions[CL(i)].width = w
 op.row_dimensions[5].height = 42
 U = "INDEX(합계표[사번키],{j})"
-sm = lambda col, *crit: f'SUMIFS(상세표[{col}],상세표[사번키],{U}' + "".join("," + c for c in crit) + ")"
+sm = lambda col_, *crit: f'SUMIFS(상세표[{col_}],상세표[사번키],{U}' + "".join("," + c for c in crit) + ")"
 C_REC_M, C_REF_M = "상세표[기록월],대상월키", "상세표[반영월],대상월키"
 C_REC_NOT, C_REF_NOT = '상세표[기록월],"<>"&대상월키', '상세표[반영월],"<>"&대상월키'
 C_SEOUL = '상세표[반영 기관],"서울병원"'
 HAS_ORG = f"COUNTIF(기관표[사번키],{U})+COUNTIF(월별근무지표[사번키],{U})>0"
 DROW = f'MATCH({U}&"|"&대상월키,월별근무지표[키],0)'
-r_ = "{r}"
-op_cols = [f'INDEX(합계표[{c}],{{j}})&""' for c in ("사번", "성명", "부서", "직위(통합)")] + [
-    f"SUMIFS(합계표[시스템 합계],합계표[사번키],{U})",
-    sm("기록 시간외", C_REC_M),
-    'IF(ABS($E{r}-$F{r})<0.01,"일치","불일치(차이 "&TEXT($F{r}-$E{r},"0.00")&")")',
-    sm("기록 시간외", C_REC_M, C_REF_NOT), sm("기록 시간외", C_REC_NOT, C_REF_M), sm("기록 시간외", C_REF_M),
-    f'IFERROR(INDEX(월별근무지표[적용 급여병원],{DROW})&"",IF({HAS_ORG},IFERROR(INDEX(기관표[급여지급병원(기준월)],'
-    f'MATCH({U}&"|"&대상월키,기관표[키],0))&"","—"),"—"))',
-    f'IF(NOT({HAS_ORG}),"{NOORG}",IF($K{{r}}="서울병원","해당",IF(N($Q{{r}})>0,"해당(말일 근무)",IF($K{{r}}="—","{NOMON}","비해당"))))',
-] + [sm(b, C_REF_M, C_SEOUL) for b in BANDS] + ["SUM($M{r}:$P{r})"] + [
-    f'COUNTIFS(상세표[사번키],{U},상세표[반영월],대상월키,상세표[야간당직],1,상세표[야간 구분],"{g}"' + seoul + ")"
-    for seoul in ("", "," + C_SEOUL) for g in ("평일", "휴일")] + [
-       f'IF(ISNUMBER({DROW}),"직접 입력",IF($K{{r}}="—","—","기관명단"))']
-aux_head(op, "W5", "(합계 행)")
+X = lambda h: f"${OC[h]}{{r}}"   # 같은 행의 다른 열
+op_vals = {
+    "사번": 'INDEX(합계표[사번],{j})&""', "성명": 'INDEX(합계표[성명],{j})&""', "부서": 'INDEX(합계표[부서],{j})&""',
+    "직위": 'INDEX(합계표[직위(요약)],{j})&""', "직급 공존": 'INDEX(합계표[직급 공존],{j})&""',
+    "시스템 합계": f"SUMIFS(합계표[시스템 합계],합계표[사번키],{U})",
+    "상세 합계(대상월 기록)": sm("기록 시간외", C_REC_M),
+    "상세 대조": f'IF(ABS({X("시스템 합계")}-{X("상세 합계(대상월 기록)")})<0.01,"일치","불일치(차이 "&TEXT({X("상세 합계(대상월 기록)")}-{X("시스템 합계")},"0.00")&")")',
+    "이월(−) 다른 달 반영": sm("기록 시간외", C_REC_M, C_REF_NOT),
+    "전입(+) 다른 달 기록": sm("기록 시간외", C_REC_NOT, C_REF_M),
+    "대상월 반영 시간": sm("기록 시간외", C_REF_M),
+    "대상월 급여지급병원": (f'IFERROR(INDEX(월별근무지표[적용 급여병원],{DROW})&"",IF({HAS_ORG},IFERROR(INDEX(기관표[급여지급병원(기준월)],'
+                     f'MATCH({U}&"|"&대상월키,기관표[키],0))&"","—"),"—"))'),
+    "서울급여": (f'IF(NOT({HAS_ORG}),"{NOORG}",IF({X("대상월 급여지급병원")}="서울병원","해당",IF(N({X("서울 반영 합계")})>0,"해당(말일 근무)",'
+              f'IF({X("대상월 급여지급병원")}="—","{NOMON}","비해당"))))'),
+    **{f"서울 {b}": sm(b, C_REF_M, C_SEOUL) for b in BANDS},
+    "서울 반영 합계": f'SUM({X("서울 " + BANDS[0])}:{X("서울 " + BANDS[-1])})',
+    **{h: f'COUNTIFS(상세표[사번키],{U},상세표[반영월],대상월키,상세표[야간당직],1,상세표[야간 구분],"{g}"' + sx + ")"
+       for h, g, sx in zip(NIGHT, ["평일", "휴일", "평일", "휴일"], ["", "", "," + C_SEOUL, "," + C_SEOUL])},
+    "기관 출처": f'IF(ISNUMBER({DROW}),"직접 입력",IF({X("대상월 급여지급병원")}="—","—","기관명단"))',
+}
+aux_head(op, f"{OPH}5", "(합계 행)")
 for k in range(1, OPN + 1):
     r = 5 + k
-    j = f"$W{r}"
-    op[f"W{r}"].value, op[f"S{r}"].font = f'=IFERROR(MATCH({k},합계표[판정순번],0),"")', f_note
-    for i, e in enumerate(op_cols, 1):
-        op.cell(row=r, column=i).value = f'=IF({j}="","",{e.replace("{j}", j).replace("{r}", str(r))})'
-op["A6"].value = f'=IF($W6="",IF(COUNT(합계표[판정순번])=0,"시간외 합계 없음",""),INDEX(합계표[사번],$W6)&"")'
-op.conditional_formatting.add(f"A6:V{OPE}", FormulaRule(formula=['$L6="비해당"'], fill=PatternFill("solid", bgColor="EDEDED"), font=Font(name=FONT, color="7F7F7F")))
-op.conditional_formatting.add(f"A6:V{OPE}", FormulaRule(formula=['LEFT($L6,7)="기관명단에 없"'], fill=PatternFill("solid", bgColor="F8CBAD"), font=Font(name=FONT, bold=True, color="833C0B")))
-op.conditional_formatting.add(f"L6:L{OPE}", FormulaRule(formula=['LEFT($L6,6)="대상월 기관"'], fill=PatternFill("solid", bgColor="FFC7CE")))
-op.conditional_formatting.add(f"G6:G{OPE}", FormulaRule(formula=['LEFT($G6,3)="불일치"'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
-op.conditional_formatting.add(f"H6:I{OPE}", FormulaRule(formula=['AND(ISNUMBER(H6),H6<>0)'], fill=PatternFill("solid", bgColor="FFF2CC"), font=Font(name=FONT, bold=True)))
-op.conditional_formatting.add(f"L6:L{OPE}", FormulaRule(formula=['LEFT($L6,2)="해당"'], fill=PatternFill("solid", bgColor="C6E0B4"), font=Font(name=FONT, bold=True)))
-op.conditional_formatting.add(f"V6:V{OPE}", FormulaRule(formula=['$V6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
-hours_fmt(op, ["E", "F", "H", "I", "J", "M", "N", "O", "P", "Q"], 6, OPE)
-hours_fmt(op, ["AA"], 6, 5 + OSN)
+    j = f"${OPH}{r}"
+    op[f"{OPH}{r}"].value, op[f"{OPH}{r}"].font = f'=IFERROR(MATCH({k},합계표[판정순번],0),"")', f_note
+    for i, (h, _w) in enumerate(op_heads, 1):
+        op.cell(row=r, column=i).value = f'=IF({j}="","",{op_vals[h].replace("{j}", j).replace("{r}", str(r))})'
+op["A6"].value = f'=IF(${OPH}6="",IF(COUNT(합계표[판정순번])=0,"시간외 합계 없음",""),INDEX(합계표[사번],${OPH}6)&"")'
+LAST = CL(len(op_heads))
+S_, P_ = OC["서울급여"], OC["기관 출처"]
+op.conditional_formatting.add(f"A6:{LAST}{OPE}", FormulaRule(formula=[f'${S_}6="비해당"'], fill=PatternFill("solid", bgColor="EDEDED"), font=Font(name=FONT, color="7F7F7F")))
+op.conditional_formatting.add(f"A6:{LAST}{OPE}", FormulaRule(formula=[f'LEFT(${S_}6,7)="기관명단에 없"'], fill=PatternFill("solid", bgColor="F8CBAD"), font=Font(name=FONT, bold=True, color="833C0B")))
+op.conditional_formatting.add(f"{S_}6:{S_}{OPE}", FormulaRule(formula=[f'LEFT(${S_}6,6)="대상월 기관"'], fill=PatternFill("solid", bgColor="FFC7CE")))
+G_ = OC["상세 대조"]
+op.conditional_formatting.add(f"{G_}6:{G_}{OPE}", FormulaRule(formula=[f'LEFT(${G_}6,3)="불일치"'], fill=PatternFill("solid", bgColor="FFC7CE"), font=Font(name=FONT, color="9C0006", bold=True)))
+H1, H2 = OC["이월(−) 다른 달 반영"], OC["전입(+) 다른 달 기록"]
+op.conditional_formatting.add(f"{H1}6:{H2}{OPE}", FormulaRule(formula=[f'AND(ISNUMBER({H1}6),{H1}6<>0)'], fill=PatternFill("solid", bgColor="FFF2CC"), font=Font(name=FONT, bold=True)))
+op.conditional_formatting.add(f"{S_}6:{S_}{OPE}", FormulaRule(formula=[f'LEFT(${S_}6,2)="해당"'], fill=PatternFill("solid", bgColor="C6E0B4"), font=Font(name=FONT, bold=True)))
+op.conditional_formatting.add(f"{P_}6:{P_}{OPE}", FormulaRule(formula=[f'${P_}6="직접 입력"'], font=Font(name=FONT, bold=True, color="2F5597")))
+C2 = OC["직급 공존"]
+op.conditional_formatting.add(f"{OC['직위']}6:{C2}{OPE}", FormulaRule(formula=[f'${C2}6<>""'], fill=PatternFill("solid", bgColor="E4DFEC"), font=Font(name=FONT, bold=True, color="5B2C6F")))
+HOUR_COLS = ["시스템 합계", "상세 합계(대상월 기록)", "이월(−) 다른 달 반영", "전입(+) 다른 달 기록", "대상월 반영 시간"] \
+    + ["서울 " + b for b in BANDS] + ["서울 반영 합계"]
+hours_fmt(op, [OC[h] for h in HOUR_COLS], 6, OPE)
+hours_fmt(op, [CL(SIDE + 2)], 6, 5 + OSN)
 op.freeze_panes = "C6"
-op.column_dimensions["W"].width = 6
-op.column_dimensions["X"].width = 3
-op["Q4"].value, op["Q4"].font, op["Q4"].alignment = "야간 당직 합계→", f_bold, Alignment(horizontal="right")
-for c in "RSTU":
+op.column_dimensions[OPH].width = 6
+op.column_dimensions[CL(SIDE - 1)].width = 3
+n0 = OC[NIGHT[0]]
+op[f"{CL(CI(n0) - 1)}4"].value = "야간 당직 합계→"
+op[f"{CL(CI(n0) - 1)}4"].font, op[f"{CL(CI(n0) - 1)}4"].alignment = f_bold, Alignment(horizontal="right")
+for h in NIGHT:
+    c = OC[h]
     op[f"{c}4"].value = f"=SUM({c}6:{c}{OPE})"
     op[f"{c}4"].font, op[f"{c}4"].border, op[f"{c}4"].alignment = f_bold, border, center
-op.conditional_formatting.add(f"S6:S{OPE}", FormulaRule(formula=['AND(ISNUMBER($S6),$S6>0)'], fill=PatternFill("solid", bgColor="FCE4D6")))
-op.conditional_formatting.add(f"U6:U{OPE}", FormulaRule(formula=['AND(ISNUMBER($U6),$U6>0)'], fill=PatternFill("solid", bgColor="FCE4D6")))
-op["Y4"].value, op["Y4"].font = "대상월 반영 기록이 있는데 합계표에 없는 사번 (전월 말일 당직만 있는 사람 등)", f_bold
+for h in (NIGHT[1], NIGHT[3]):
+    c = OC[h]
+    op.conditional_formatting.add(f"{c}6:{c}{OPE}", FormulaRule(formula=[f'AND(ISNUMBER(${c}6),${c}6>0)'], fill=PatternFill("solid", bgColor="FCE4D6")))
+op[f"{CL(SIDE)}4"].value, op[f"{CL(SIDE)}4"].font = "대상월 반영 기록이 있는데 합계표에 없는 사번 (전월 말일 당직만 있는 사람 등)", f_bold
 for i, (h, w) in enumerate([("사번", 10), ("성명", 8), ("대상월 반영 시간", 10)]):
-    head_cell(op.cell(row=5, column=25 + i), h)
-    op.column_dimensions[CL(25 + i)].width = w
-aux_head(op, "AB5", "(상세 행)")
-fill_list(op, 6, OSN, 25, "AB", "상세표[합계없음순번]",
+    head_cell(op.cell(row=5, column=SIDE + i), h)
+    op.column_dimensions[CL(SIDE + i)].width = w
+aux_head(op, f"{SIDEH}5", "(상세 행)")
+fill_list(op, 6, OSN, SIDE, SIDEH, "상세표[합계없음순번]",
           [D("사번") + '&""', D("성명") + '&""', f'SUMIFS(상세표[기록 시간외],상세표[사번키],{D("사번키")},상세표[반영월],대상월키)'],
           "없음", "SUM(상세표[합계없음첫행])=0")
 
@@ -491,7 +531,8 @@ for i, (h, w) in enumerate(ot_heads, 1):
     ot.column_dimensions[CL(i)].width = w
 ot.row_dimensions[5].height = 30
 UK = D("사번키")
-POS = f'IFERROR(INDEX(합계표[직위(통합)],MATCH({UK},합계표[사번키],0))&"","")'
+POS = (f'IFERROR(INDEX(합계표[직위(요약)],MATCH({UK},합계표[사번키],0))&IF(INDEX(합계표[직급 공존],MATCH({UK},합계표[사번키],0))="","",'
+       f'" ("&INDEX(합계표[직급 공존],MATCH({UK},합계표[사번키],0))&")"),"")')
 ot_cols = [D("사번") + '&""', D("성명") + '&""', D("부서") + '&""', f'IF({POS}="",{D("직위")}&"",{POS})',
            f"COUNTIFS(상세표[사번키],{UK},상세표[기록월],대상월키)",
            f"SUMIFS(상세표[기록 시간외],상세표[사번키],{UK},상세표[기록월],대상월키)",
@@ -544,6 +585,11 @@ lines = [
     ("• 그 밖의 조합(예: 창원→서울, 구리→인천): 말일 근무를 한 익월 기관. 예) 9월 창원 근무 인턴이 9/30 저녁부터 서울에서 당직 → 9월 급여, 서울병원 → 9월 서울급여 '해당(말일 근무)'", f_base),
     ("• 익월 기관명단이 없으면 '말일 근무: 익월 기관 정보 없음(시작월 기관 반영)', 두 달 모두 없으면 '기관 정보 없음', 사번이 기관명단·직접 입력에 아예 없으면 '기관명단에 없음(다른 병원으로 발송)'", f_base),
     ("• 그래서 출력_서울급여판정의 이월(−)/전입(+)은 0이 정상입니다(다른 달 기록이 대상월에 섞이지 않았는지 보는 대조용).", f_base),
+    ("", f_base),
+    ("[직급 공존(승급하는 달)] — 출력_서울급여판정의 직위·직급 공존 열", f_bold),
+    ("• 같은 사번이 입력_시간외합계에 다른 직위(B 코드)로 두 줄 이상 있으면 '직급 공존'에 이전 직급 → 승급 직급을 표시하고 보라색으로 칠합니다.", f_base),
+    ("• 요약 직위는 B 숫자가 작은 쪽을 씁니다: B4+B3 → B3, B3+B2 → B2, B2+B1 → B1, B1+B0 → B0. 시간·건수는 직위와 관계없이 사번 기준으로 합칩니다.", f_base),
+    ("• B 코드가 아닌 직위끼리(예: 레지던트2·전임의) 공존하면 '우선순위 판단 불가'로 표시하고 첫 줄 직위를 씁니다.", f_base),
     ("", f_base),
     ("[야간 당직 건수] — 출력_서울급여판정의 평일/휴일 야간 당직(건)", f_bold),
     ("• 22시부터 06시까지 모두 근무한 밤만 야간 당직 1건입니다: 같은 사람·같은 밤의 22~06시 시간 합계가 8시간이어야 합니다"
